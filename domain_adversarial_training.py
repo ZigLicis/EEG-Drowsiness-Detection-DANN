@@ -57,6 +57,22 @@ def load_matlab_v73(filename):
                 continue
     return data
 
+
+def load_mat_file(filename):
+    """Load MATLAB file, supporting both v5 and v7.3 formats"""
+    try:
+        # First try scipy.io.loadmat for v5 format (don't squeeze to preserve dimensions)
+        data = loadmat(filename, squeeze_me=False)
+        # Remove MATLAB metadata keys
+        data = {k: v for k, v in data.items() if not k.startswith('__')}
+        return data
+    except NotImplementedError:
+        # v7.3 format - use h5py
+        return load_matlab_v73(filename)
+    except Exception:
+        # Fallback to h5py
+        return load_matlab_v73(filename)
+
 class GradientReversalLayer(torch.autograd.Function):
     """
     Gradient Reversal Layer for Domain Adversarial Training
@@ -346,10 +362,10 @@ def main(data_dir='diagnostics/python_data', exclude_subjects=None):
             print("Run MATLAB preprocessing first (main_dl_pipeline.m or main_dl_pipeline_cui_dataset.m)")
             return
     
-    # Load metadata using h5py for v7.3 files
+    # Load metadata (supports both v5 and v7.3 MAT formats)
     metadata_file = os.path.join(data_dir, 'metadata.mat')
     try:
-        metadata = load_matlab_v73(metadata_file)
+        metadata = load_mat_file(metadata_file)
         num_classes = int(metadata['num_classes'])
         num_subjects = int(metadata['num_subjects'])
         data_shape = metadata['data_shape']
@@ -380,9 +396,9 @@ def main(data_dir='diagnostics/python_data', exclude_subjects=None):
     for fold_num in fold_numbers:
         print(f"\n=== Processing Fold {fold_num} ===")
         
-        # Load fold data using h5py
+        # Load fold data (supports both v5 and v7.3 MAT formats)
         try:
-            fold_data = load_matlab_v73(os.path.join(data_dir, f'fold_{fold_num}_data.mat'))
+            fold_data = load_mat_file(os.path.join(data_dir, f'fold_{fold_num}_data.mat'))
         except Exception as e:
             print(f"Error loading fold {fold_num}: {e}")
             continue
@@ -465,22 +481,34 @@ def main(data_dir='diagnostics/python_data', exclude_subjects=None):
         # Balanced domain sampling: weight samples so domains are balanced
         # Infer domain id from subject id: assume subjects 1..N_orig are original, rest are DROZY
         # We detect domain by checking unique_subjects names
-        unique_subjects_py = metadata['unique_subjects'] if 'unique_subjects' in metadata else None
-        domain_weights = None
+        unique_subjects_py = metadata.get('unique_subjects', None)
+        use_domain_sampling = False
+        
         if unique_subjects_py is not None:
-            # Build subject->domain map
+            # Flatten if needed (from loadmat squeeze_me=False)
+            if hasattr(unique_subjects_py, 'flatten'):
+                unique_subjects_py = unique_subjects_py.flatten()
+            
+            # Build subject->domain map (check for Drozy_ prefix for multi-domain datasets)
             subs = [s.decode('utf-8') if isinstance(s, bytes) else str(s) for s in unique_subjects_py]
-            subj_to_domain = {i: (1 if s.startswith('Drozy_') else 0) for i, s in enumerate(subs)}
-            # Convert subject labels (0-based) to domain labels
-            dom_train = np.array([subj_to_domain[int(s)] for s in (subject_train - 1)])
-            # Compute class weights inverse to domain freq
-            counts = np.bincount(dom_train, minlength=2) + 1e-6
-            weights = 1.0 / counts
-            sample_weights = weights[dom_train]
-            import torch.utils.data as tud
-            sampler = tud.WeightedRandomSampler(weights=torch.DoubleTensor(sample_weights), num_samples=len(sample_weights), replacement=True)
-            train_loader = DataLoader(train_dataset, batch_size=32, sampler=sampler, shuffle=False)
-        else:
+            has_drozy = any(s.startswith('Drozy_') for s in subs)
+            
+            if has_drozy:
+                # Multi-domain dataset (e.g., TheOriginalEEG + DROZY)
+                subj_to_domain = {i: (1 if s.startswith('Drozy_') else 0) for i, s in enumerate(subs)}
+                # Convert subject labels (0-based) to domain labels
+                dom_train = np.array([subj_to_domain[int(s)] for s in (subject_train - 1)])
+                # Compute class weights inverse to domain freq
+                counts = np.bincount(dom_train, minlength=2) + 1e-6
+                weights = 1.0 / counts
+                sample_weights = weights[dom_train]
+                import torch.utils.data as tud
+                sampler = tud.WeightedRandomSampler(weights=torch.DoubleTensor(sample_weights), num_samples=len(sample_weights), replacement=True)
+                train_loader = DataLoader(train_dataset, batch_size=32, sampler=sampler, shuffle=False)
+                use_domain_sampling = True
+        
+        if not use_domain_sampling:
+            # Single-domain dataset (e.g., SEED-VIG only) - use regular shuffling
             train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
         val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
         test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
@@ -498,9 +526,9 @@ def main(data_dir='diagnostics/python_data', exclude_subjects=None):
         
         # Evaluate on test set
         test_accuracy, predictions, true_labels = evaluate_model(model, test_loader, device)
-        # Per-domain test accuracy logging (if metadata has subjects)
+        # Per-domain test accuracy logging (if multi-domain dataset)
         per_domain_acc = {}
-        if unique_subjects_py is not None:
+        if unique_subjects_py is not None and use_domain_sampling:
             subs = [s.decode('utf-8') if isinstance(s, bytes) else str(s) for s in unique_subjects_py]
             subj_to_domain = {i: (1 if s.startswith('Drozy_') else 0) for i, s in enumerate(subs)}
             dom_test = np.array([subj_to_domain[int(s)] for s in (subject_test - 1)])
