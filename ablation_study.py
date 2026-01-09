@@ -3,19 +3,18 @@
 Ablation Study: Comparing DANN vs Baseline Models
 ==================================================
 
-This script implements baseline models (SVM, CNN, CNN-LSTM) for comparison
-against the Domain Adversarial Neural Network (DANN) approach.
-
-Models:
+This script implements all models for comparison:
     1. SVM - Support Vector Machine with RBF kernel on flattened spectral features
     2. CNN - Same architecture as DANN but without domain adversarial training
     3. CNN-LSTM - CNN feature extractor + LSTM for temporal modeling
+    4. DANN - Domain Adversarial Neural Network (the proposed model)
 
 Usage:
-    python ablation_study.py --data_dir python_data_best\ 13-04-03-643 --model all
-    python ablation_study.py --data_dir python_data_best\ 13-04-03-643 --model svm
-    python ablation_study.py --data_dir python_data_best\ 13-04-03-643 --model cnn
-    python ablation_study.py --data_dir python_data_best\ 13-04-03-643 --model cnn_lstm
+    python ablation_study.py --data_dir "python_data_best 13-04-03-643" --model all
+    python ablation_study.py --data_dir "python_data_best 13-04-03-643" --model svm
+    python ablation_study.py --data_dir "python_data_best 13-04-03-643" --model cnn
+    python ablation_study.py --data_dir "python_data_best 13-04-03-643" --model cnn_lstm
+    python ablation_study.py --data_dir "python_data_best 13-04-03-643" --model dann
 """
 
 import os
@@ -69,7 +68,7 @@ def load_matlab_v73(filename):
 # ============================================================================
 
 class EEGDataset(Dataset):
-    """PyTorch Dataset for EEG data"""
+    """PyTorch Dataset for EEG data (without subject labels)"""
     def __init__(self, X, y):
         self.X = torch.FloatTensor(X)
         self.y = torch.LongTensor(y - 1)  # Convert to 0-based
@@ -79,6 +78,19 @@ class EEGDataset(Dataset):
     
     def __getitem__(self, idx):
         return self.X[idx], self.y[idx]
+
+class EEGDatasetWithSubject(Dataset):
+    """PyTorch Dataset for EEG data with subject labels (for DANN)"""
+    def __init__(self, X, y_drowsiness, y_subject):
+        self.X = torch.FloatTensor(X)
+        self.y_drowsiness = torch.LongTensor(y_drowsiness - 1)  # Convert to 0-based
+        self.y_subject = torch.LongTensor(y_subject - 1)  # Convert to 0-based
+        
+    def __len__(self):
+        return len(self.X)
+    
+    def __getitem__(self, idx):
+        return self.X[idx], self.y_drowsiness[idx], self.y_subject[idx]
 
 # ============================================================================
 # Model 1: SVM (Support Vector Machine)
@@ -238,11 +250,120 @@ class CNNLSTM(nn.Module):
         return output
 
 # ============================================================================
+# Model 4: DANN (Domain Adversarial Neural Network)
+# ============================================================================
+
+class GradientReversalLayer(torch.autograd.Function):
+    """
+    Gradient Reversal Layer for Domain Adversarial Training
+    Forward: identity function
+    Backward: multiply gradients by -lambda
+    """
+    @staticmethod
+    def forward(ctx, x, lambda_):
+        ctx.lambda_ = lambda_
+        return x.view_as(x)
+    
+    @staticmethod
+    def backward(ctx, grad_output):
+        output = grad_output.neg() * ctx.lambda_
+        return output, None
+
+def gradient_reversal(x, lambda_=1.0):
+    return GradientReversalLayer.apply(x, lambda_)
+
+class CosineClassifier(nn.Module):
+    """
+    Weight-normalized cosine classifier with learnable temperature (scale).
+    """
+    def __init__(self, input_dim, num_classes, init_scale=16.0):
+        super(CosineClassifier, self).__init__()
+        self.weight = nn.Parameter(torch.empty(num_classes, input_dim))
+        nn.init.xavier_uniform_(self.weight)
+        self.scale = nn.Parameter(torch.tensor(float(init_scale)))
+
+    def forward(self, x):
+        x_norm = F.normalize(x, p=2, dim=1)
+        w_norm = F.normalize(self.weight, p=2, dim=1)
+        logits = self.scale * torch.matmul(x_norm, w_norm.t())
+        return logits
+
+class DomainAdversarialCNN(nn.Module):
+    """
+    Domain Adversarial CNN for EEG Drowsiness Detection
+    
+    Architecture:
+    - Shared feature extractor (3 conv blocks)
+    - Drowsiness classifier branch
+    - Subject classifier branch (with gradient reversal)
+    """
+    
+    def __init__(self, input_shape, num_classes, num_subjects):
+        super(DomainAdversarialCNN, self).__init__()
+        
+        self.freq_bins, self.channels = input_shape[1], input_shape[2]
+        
+        # Shared feature extractor
+        self.features = nn.Sequential(
+            # Block 1
+            nn.Conv2d(1, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d((2, 1), stride=(2, 1)),
+            
+            # Block 2
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d((2, 1), stride=(2, 1)),
+            
+            # Block 3
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d((2, 1), stride=(2, 1)),
+        )
+        
+        # Calculate feature dimensions
+        with torch.no_grad():
+            dummy_input = torch.zeros(1, 1, self.freq_bins, self.channels)
+            dummy_features = self.features(dummy_input)
+            self.feature_dim = dummy_features.numel()
+        
+        # Shared fully connected layer
+        self.shared_fc = nn.Sequential(
+            nn.Linear(self.feature_dim, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.5)
+        )
+        self.shared_norm = nn.LayerNorm(128)
+        
+        # Cosine classifier heads
+        self.drowsiness_classifier = CosineClassifier(128, num_classes)
+        self.subject_classifier = CosineClassifier(128, num_subjects)
+        
+    def forward(self, x, lambda_=1.0):
+        # Shared feature extraction
+        features = self.features(x)
+        features = features.view(features.size(0), -1)
+        shared_features = self.shared_fc(features)
+        shared_features = self.shared_norm(shared_features)
+        
+        # Drowsiness prediction (normal forward)
+        drowsiness_pred = self.drowsiness_classifier(shared_features)
+        
+        # Subject prediction (with gradient reversal)
+        reversed_features = gradient_reversal(shared_features, lambda_)
+        subject_pred = self.subject_classifier(reversed_features)
+        
+        return drowsiness_pred, subject_pred
+
+# ============================================================================
 # Training Functions
 # ============================================================================
 
 def train_pytorch_model(model, train_loader, val_loader, device, num_epochs=100, lr=0.001, model_name='model'):
-    """Train a PyTorch model"""
+    """Train a PyTorch model (for CNN and CNN-LSTM)"""
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=10)
@@ -311,8 +432,108 @@ def train_pytorch_model(model, train_loader, val_loader, device, num_epochs=100,
     
     return model, best_val_acc
 
+def train_dann_model(model, train_loader, val_loader, device, num_epochs=120, lr=0.0003):
+    """Train the DANN model with domain adversarial training"""
+    # Loss functions
+    drowsiness_criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    subject_criterion = nn.CrossEntropyLoss()
+    
+    # Optimizer with cosine annealing
+    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    warmup_epochs = max(1, int(0.1 * num_epochs))
+    cosine_epochs = max(1, num_epochs - warmup_epochs)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cosine_epochs, eta_min=lr * 0.1)
+    
+    best_val_acc = 0.0
+    patience_counter = 0
+    best_model_state = None
+    
+    for epoch in range(num_epochs):
+        model.train()
+        epoch_drowsiness_loss = 0.0
+        epoch_subject_loss = 0.0
+        
+        # Warmup LR
+        if epoch < warmup_epochs:
+            warmup_factor = float(epoch + 1) / float(warmup_epochs)
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lr * warmup_factor
+        else:
+            scheduler.step()
+
+        # Dynamic lambda for gradient reversal
+        lambda_ = 2.0 / (1.0 + np.exp(-25 * epoch / num_epochs)) - 1.0
+
+        # Dynamic domain loss weight
+        min_w, max_w, ramp_frac = 0.2, 0.8, 0.2
+        progress = epoch / num_epochs
+        ramp = min(1.0, progress / ramp_frac)
+        domain_weight = min_w + (max_w - min_w) * ramp
+        
+        for batch_idx, (data, drowsiness_labels, subject_labels) in enumerate(train_loader):
+            data = data.to(device)
+            drowsiness_labels = drowsiness_labels.to(device)
+            subject_labels = subject_labels.to(device)
+            
+            optimizer.zero_grad()
+            
+            # Forward pass
+            drowsiness_pred, subject_pred = model(data, lambda_)
+            
+            # Calculate losses
+            drowsiness_loss = drowsiness_criterion(drowsiness_pred, drowsiness_labels)
+            subject_loss = subject_criterion(subject_pred, subject_labels)
+            
+            # Total loss
+            total_loss = drowsiness_loss + domain_weight * subject_loss
+            
+            # Backward pass
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            
+            epoch_drowsiness_loss += drowsiness_loss.item()
+            epoch_subject_loss += subject_loss.item()
+        
+        # Validation
+        model.eval()
+        val_correct = 0
+        val_total = 0
+        
+        with torch.no_grad():
+            for data, drowsiness_labels, _ in val_loader:
+                data = data.to(device)
+                drowsiness_labels = drowsiness_labels.to(device)
+                
+                drowsiness_pred, _ = model(data, 0.0)
+                _, predicted = torch.max(drowsiness_pred.data, 1)
+                val_total += drowsiness_labels.size(0)
+                val_correct += (predicted == drowsiness_labels).sum().item()
+        
+        val_acc = val_correct / val_total
+        
+        # Early stopping
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            patience_counter = 0
+            best_model_state = model.state_dict().copy()
+        else:
+            patience_counter += 1
+            if patience_counter >= 15:
+                print(f"  Early stopping at epoch {epoch+1}")
+                break
+        
+        if (epoch + 1) % 20 == 0:
+            print(f"  Epoch [{epoch+1}/{num_epochs}] Val Acc: {val_acc:.4f}, Lambda: {lambda_:.4f}")
+    
+    # Load best model
+    if best_model_state is not None:
+        model.load_state_dict(best_model_state)
+    
+    return model, best_val_acc
+
 def evaluate_pytorch_model(model, test_loader, device):
-    """Evaluate a PyTorch model"""
+    """Evaluate a PyTorch model (CNN/CNN-LSTM)"""
     model.eval()
     predictions = []
     true_labels = []
@@ -328,15 +549,32 @@ def evaluate_pytorch_model(model, test_loader, device):
     accuracy = accuracy_score(true_labels, predictions)
     return accuracy, predictions, true_labels
 
+def evaluate_dann_model(model, test_loader, device):
+    """Evaluate the DANN model"""
+    model.eval()
+    predictions = []
+    true_labels = []
+    
+    with torch.no_grad():
+        for data, drowsiness_labels, _ in test_loader:
+            data = data.to(device)
+            drowsiness_pred, _ = model(data, 0.0)
+            _, predicted = torch.max(drowsiness_pred.data, 1)
+            predictions.extend(predicted.cpu().numpy())
+            true_labels.extend(drowsiness_labels.numpy())
+    
+    accuracy = accuracy_score(true_labels, predictions)
+    return accuracy, predictions, true_labels
+
 # ============================================================================
 # Main Ablation Study
 # ============================================================================
 
-def run_ablation_study(data_dir, models_to_run=['svm', 'cnn', 'cnn_lstm']):
+def run_ablation_study(data_dir, models_to_run=['svm', 'cnn', 'cnn_lstm', 'dann']):
     """Run ablation study with specified models"""
     
     print("=" * 70)
-    print("ABLATION STUDY: Comparing Baseline Models vs DANN")
+    print("ABLATION STUDY: Comparing All Models")
     print("=" * 70)
     print(f"Data directory: {data_dir}")
     print(f"Models to evaluate: {models_to_run}")
@@ -347,7 +585,7 @@ def run_ablation_study(data_dir, models_to_run=['svm', 'cnn', 'cnn_lstm']):
     export_check_file = os.path.join(data_dir, 'export_complete.mat')
     if not os.path.exists(export_check_file):
         print(f"Error: No exported data found in {data_dir}")
-        return
+        return None, None
     
     # Load metadata
     metadata_file = os.path.join(data_dir, 'metadata.mat')
@@ -357,7 +595,7 @@ def run_ablation_study(data_dir, models_to_run=['svm', 'cnn', 'cnn_lstm']):
         num_subjects = int(metadata['num_subjects'])
     except Exception as e:
         print(f"Error loading metadata: {e}")
-        return
+        return None, None
     
     print(f"Number of classes: {num_classes}")
     print(f"Number of subjects: {num_subjects}")
@@ -390,19 +628,22 @@ def run_ablation_study(data_dir, models_to_run=['svm', 'cnn', 'cnn_lstm']):
         # Extract data
         X_train = fold_data['XTrain']
         y_train = fold_data['YTrain_numeric'].flatten()
+        subject_train = fold_data['train_subject_nums'].flatten()
         
         X_val = fold_data['XValidation']
         y_val = fold_data['YValidation_numeric'].flatten()
+        subject_val = fold_data['val_subject_nums'].flatten()
         
         X_test = fold_data['XTest']
         y_test = fold_data['YTest_numeric'].flatten()
+        subject_test = fold_data['test_subject_nums'].flatten()
         
         # Reshape for PyTorch models
         X_train_pt = np.transpose(X_train, (3, 2, 0, 1))
         X_val_pt = np.transpose(X_val, (3, 2, 0, 1))
         X_test_pt = np.transpose(X_test, (3, 2, 0, 1))
         
-        # Normalize
+        # Normalize (channel-wise)
         train_mean = X_train_pt.mean(axis=(0, 1, 2), keepdims=True)
         train_std = X_train_pt.std(axis=(0, 1, 2), keepdims=True) + 1e-8
         
@@ -484,6 +725,33 @@ def run_ablation_study(data_dir, models_to_run=['svm', 'cnn', 'cnn_lstm']):
             results['cnn_lstm']['accuracies'].append(lstm_acc)
             results['cnn_lstm']['fold_nums'].append(fold_num)
             print(f"CNN-LSTM Accuracy: {lstm_acc*100:.2f}%")
+        
+        # =====================================================================
+        # Model 4: DANN (Domain Adversarial Neural Network)
+        # =====================================================================
+        if 'dann' in models_to_run:
+            print("\n--- Training DANN ---")
+            
+            train_dataset = EEGDatasetWithSubject(X_train_pt, y_train, subject_train)
+            val_dataset = EEGDatasetWithSubject(X_val_pt, y_val, subject_val)
+            test_dataset = EEGDatasetWithSubject(X_test_pt, y_test, subject_test)
+            
+            train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+            val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+            test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+            
+            input_shape = (1, X_train_pt.shape[2], X_train_pt.shape[3])
+            dann_model = DomainAdversarialCNN(input_shape, num_classes, num_subjects).to(device)
+            
+            dann_model, _ = train_dann_model(
+                dann_model, train_loader, val_loader, device,
+                num_epochs=120, lr=0.0003
+            )
+            
+            dann_acc, dann_preds, dann_true = evaluate_dann_model(dann_model, test_loader, device)
+            results['dann']['accuracies'].append(dann_acc)
+            results['dann']['fold_nums'].append(fold_num)
+            print(f"DANN Accuracy: {dann_acc*100:.2f}%")
     
     # =========================================================================
     # Final Results Summary
@@ -525,6 +793,19 @@ def run_ablation_study(data_dir, models_to_run=['svm', 'cnn', 'cnn_lstm']):
     
     print("-" * 70)
     
+    # DANN improvement analysis
+    if 'dann' in summary_data:
+        print("\nDANN Improvement Over Baselines:")
+        print("-" * 70)
+        dann_mean = summary_data['dann']['mean']
+        for model in models_to_run:
+            if model != 'dann' and model in summary_data:
+                baseline_mean = summary_data[model]['mean']
+                improvement = dann_mean - baseline_mean
+                rel_improvement = (improvement / baseline_mean) * 100 if baseline_mean > 0 else 0
+                print(f"DANN vs {model.upper()}: {improvement:+.2f}% (relative: {rel_improvement:+.1f}%)")
+        print("-" * 70)
+    
     # Save results
     output_file = os.path.join(data_dir, 'ablation_results.mat')
     save_data = {
@@ -543,82 +824,190 @@ def run_ablation_study(data_dir, models_to_run=['svm', 'cnn', 'cnn_lstm']):
     # Create comparison plot
     create_comparison_plot(results, models_to_run, fold_numbers, data_dir, summary_data)
     
+    # Generate text report
+    generate_ablation_report(results, models_to_run, fold_numbers, data_dir, summary_data)
+    
     return results, summary_data
 
 def create_comparison_plot(results, models_to_run, fold_numbers, data_dir, summary_data):
     """Create visualization comparing all models"""
     
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
     
-    # Plot 1: Per-fold accuracies
+    colors = {'svm': '#e74c3c', 'cnn': '#3498db', 'cnn_lstm': '#9b59b6', 'dann': '#27ae60'}
+    labels = {'svm': 'SVM', 'cnn': 'CNN', 'cnn_lstm': 'CNN-LSTM', 'dann': 'DANN (Ours)'}
+    
+    # Plot 1: Per-fold bar chart
     ax1 = axes[0]
     x = np.arange(len(fold_numbers))
-    width = 0.25
-    colors = {'svm': '#e74c3c', 'cnn': '#3498db', 'cnn_lstm': '#2ecc71'}
+    width = 0.2
     
     for i, model in enumerate(models_to_run):
         accs = [a * 100 for a in results[model]['accuracies']]
         offset = (i - len(models_to_run)/2 + 0.5) * width
-        bars = ax1.bar(x + offset, accs, width, label=model.upper(), 
-                       color=colors.get(model, 'gray'), edgecolor='black', linewidth=0.5)
+        ax1.bar(x + offset, accs, width, label=labels.get(model, model.upper()), 
+                color=colors.get(model, 'gray'), edgecolor='black', linewidth=0.5)
     
     ax1.set_xlabel('Fold Number', fontsize=12, fontweight='bold')
     ax1.set_ylabel('Accuracy (%)', fontsize=12, fontweight='bold')
-    ax1.set_title('Per-Fold Accuracy Comparison', fontsize=14, fontweight='bold')
+    ax1.set_title('(A) Per-Fold Accuracy', fontsize=14, fontweight='bold')
     ax1.set_xticks(x)
     ax1.set_xticklabels(fold_numbers)
-    ax1.legend(fontsize=10)
-    ax1.set_ylim([0, 105])
-    ax1.axhline(y=50, color='gray', linestyle='--', alpha=0.5, label='Chance')
+    ax1.legend(fontsize=9, loc='lower right')
+    ax1.set_ylim([40, 105])
+    ax1.axhline(y=50, color='gray', linestyle='--', alpha=0.5)
     ax1.grid(axis='y', alpha=0.3)
     
-    # Plot 2: Overall comparison (bar chart with error bars)
+    # Plot 2: Box plot
     ax2 = axes[1]
-    model_names = [m.upper() for m in models_to_run]
-    means = [summary_data[m]['mean'] for m in models_to_run]
-    stds = [summary_data[m]['std'] for m in models_to_run]
+    data_to_plot = [[a * 100 for a in results[m]['accuracies']] for m in models_to_run]
+    bp = ax2.boxplot(data_to_plot, labels=[labels.get(m, m.upper()) for m in models_to_run], patch_artist=True)
     
-    bars = ax2.bar(model_names, means, yerr=stds, capsize=5,
+    for patch, model in zip(bp['boxes'], models_to_run):
+        patch.set_facecolor(colors.get(model, 'gray'))
+        patch.set_alpha(0.7)
+    
+    ax2.set_ylabel('Accuracy (%)', fontsize=12, fontweight='bold')
+    ax2.set_title('(B) Accuracy Distribution', fontsize=14, fontweight='bold')
+    ax2.axhline(y=50, color='gray', linestyle='--', alpha=0.5)
+    ax2.grid(axis='y', alpha=0.3)
+    ax2.set_ylim([40, 105])
+    
+    # Plot 3: Overall comparison bar chart
+    ax3 = axes[2]
+    model_names = [labels.get(m, m.upper()) for m in models_to_run]
+    means = [summary_data[m]['mean'] for m in models_to_run if m in summary_data]
+    stds = [summary_data[m]['std'] for m in models_to_run if m in summary_data]
+    
+    bars = ax3.bar(model_names, means, yerr=stds, capsize=5,
                    color=[colors.get(m, 'gray') for m in models_to_run],
                    edgecolor='black', linewidth=1.5)
     
-    # Add value labels on bars
+    # Add value labels
     for bar, mean, std in zip(bars, means, stds):
         height = bar.get_height()
-        ax2.annotate(f'{mean:.1f}%\n±{std:.1f}%',
-                    xy=(bar.get_x() + bar.get_width() / 2, height),
-                    xytext=(0, 3),
-                    textcoords="offset points",
+        ax3.annotate(f'{mean:.1f}%\n±{std:.1f}%',
+                    xy=(bar.get_x() + bar.get_width() / 2, height + std + 1),
                     ha='center', va='bottom', fontsize=10, fontweight='bold')
     
-    ax2.set_ylabel('Mean Accuracy (%)', fontsize=12, fontweight='bold')
-    ax2.set_title('Overall Model Comparison', fontsize=14, fontweight='bold')
-    ax2.set_ylim([0, 105])
-    ax2.axhline(y=50, color='gray', linestyle='--', alpha=0.5)
-    ax2.grid(axis='y', alpha=0.3)
+    ax3.set_ylabel('Mean Accuracy (%)', fontsize=12, fontweight='bold')
+    ax3.set_title('(C) Overall Comparison', fontsize=14, fontweight='bold')
+    ax3.set_ylim([40, 110])
+    ax3.axhline(y=50, color='gray', linestyle='--', alpha=0.5)
+    ax3.grid(axis='y', alpha=0.3)
     
     plt.tight_layout()
     
     # Save figure
     fig_path = os.path.join(data_dir, 'ablation_comparison.png')
-    plt.savefig(fig_path, dpi=150, bbox_inches='tight')
+    plt.savefig(fig_path, dpi=300, bbox_inches='tight')
     plt.savefig(fig_path.replace('.png', '.pdf'), bbox_inches='tight')
     plt.close()
     print(f"Comparison plot saved to: {fig_path}")
 
+def generate_ablation_report(results, models_to_run, fold_numbers, data_dir, summary_data):
+    """Generate a detailed text report"""
+    
+    report_path = os.path.join(data_dir, 'ablation_report.txt')
+    
+    with open(report_path, 'w') as f:
+        f.write("=" * 80 + "\n")
+        f.write("ABLATION STUDY REPORT\n")
+        f.write("=" * 80 + "\n\n")
+        f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"Data Directory: {data_dir}\n")
+        f.write(f"Number of Folds: {len(fold_numbers)}\n\n")
+        
+        # Model descriptions
+        f.write("-" * 80 + "\n")
+        f.write("MODEL DESCRIPTIONS\n")
+        f.write("-" * 80 + "\n\n")
+        
+        descriptions = {
+            'svm': "SVM (Support Vector Machine)\n   - RBF kernel with C=10.0\n   - Features: Flattened spectral power\n   - No deep learning, no domain adaptation\n",
+            'cnn': "CNN (Convolutional Neural Network)\n   - 3-block CNN (same as DANN feature extractor)\n   - Standard cross-entropy training\n   - No domain adversarial training\n",
+            'cnn_lstm': "CNN-LSTM\n   - 2-block CNN + Bidirectional LSTM\n   - Treats frequency as temporal sequence\n   - No domain adaptation\n",
+            'dann': "DANN (Domain Adversarial Neural Network) [PROPOSED]\n   - 3-block CNN feature extractor\n   - Gradient Reversal Layer\n   - Subject classifier for domain adaptation\n   - Cosine classifier with learnable temperature\n"
+        }
+        
+        for model in models_to_run:
+            if model in descriptions:
+                f.write(f"{descriptions[model]}\n")
+        
+        # Results table
+        f.write("-" * 80 + "\n")
+        f.write("PER-FOLD ACCURACY RESULTS (%)\n")
+        f.write("-" * 80 + "\n\n")
+        
+        # Header
+        f.write(f"{'Fold':<8}")
+        for model in models_to_run:
+            f.write(f"{model.upper():<12}")
+        f.write("\n" + "-" * (8 + 12 * len(models_to_run)) + "\n")
+        
+        # Data rows
+        for i, fold_num in enumerate(fold_numbers):
+            f.write(f"{fold_num:<8}")
+            for model in models_to_run:
+                if i < len(results[model]['accuracies']):
+                    acc = results[model]['accuracies'][i] * 100
+                    f.write(f"{acc:<12.1f}")
+                else:
+                    f.write(f"{'N/A':<12}")
+            f.write("\n")
+        
+        f.write("-" * (8 + 12 * len(models_to_run)) + "\n\n")
+        
+        # Summary
+        f.write("-" * 80 + "\n")
+        f.write("SUMMARY STATISTICS\n")
+        f.write("-" * 80 + "\n\n")
+        
+        f.write(f"{'Model':<15}{'Mean (%)':<15}{'Std (%)':<15}{'Min (%)':<15}{'Max (%)':<15}\n")
+        f.write("-" * 75 + "\n")
+        
+        for model in models_to_run:
+            if model in summary_data:
+                accs = np.array(results[model]['accuracies']) * 100
+                f.write(f"{model.upper():<15}{np.mean(accs):<15.2f}{np.std(accs):<15.2f}"
+                       f"{np.min(accs):<15.2f}{np.max(accs):<15.2f}\n")
+        
+        f.write("-" * 75 + "\n\n")
+        
+        # DANN improvement
+        if 'dann' in summary_data:
+            f.write("-" * 80 + "\n")
+            f.write("DANN IMPROVEMENT OVER BASELINES\n")
+            f.write("-" * 80 + "\n\n")
+            
+            dann_mean = summary_data['dann']['mean']
+            for model in models_to_run:
+                if model != 'dann' and model in summary_data:
+                    baseline_mean = summary_data[model]['mean']
+                    improvement = dann_mean - baseline_mean
+                    rel_improvement = (improvement / baseline_mean) * 100 if baseline_mean > 0 else 0
+                    f.write(f"DANN vs {model.upper()}:\n")
+                    f.write(f"  Absolute improvement: {improvement:+.2f}%\n")
+                    f.write(f"  Relative improvement: {rel_improvement:+.1f}%\n\n")
+        
+        f.write("=" * 80 + "\n")
+        f.write("END OF REPORT\n")
+        f.write("=" * 80 + "\n")
+    
+    print(f"Report saved to: {report_path}")
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Ablation Study: Compare baseline models vs DANN')
+    parser = argparse.ArgumentParser(description='Ablation Study: Compare all models including DANN')
     parser.add_argument('--data_dir', type=str, required=True,
                         help='Directory containing exported MATLAB data')
     parser.add_argument('--model', type=str, default='all',
-                        choices=['all', 'svm', 'cnn', 'cnn_lstm'],
+                        choices=['all', 'svm', 'cnn', 'cnn_lstm', 'dann'],
                         help='Which model(s) to run (default: all)')
     args = parser.parse_args()
     
     if args.model == 'all':
-        models = ['svm', 'cnn', 'cnn_lstm']
+        models = ['svm', 'cnn', 'cnn_lstm', 'dann']
     else:
         models = [args.model]
     
     run_ablation_study(args.data_dir, models)
-
