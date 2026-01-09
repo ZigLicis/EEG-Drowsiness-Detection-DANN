@@ -28,9 +28,11 @@ from sklearn.metrics import confusion_matrix, classification_report
 import warnings
 warnings.filterwarnings('ignore')
 
-# Set random seeds for reproducibility
-torch.manual_seed(43)
-np.random.seed(43)
+# Simple seed setting
+torch.manual_seed(42)
+np.random.seed(42)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(42)
 
 def load_matlab_v73(filename):
     """Load MATLAB v7.3 files using h5py"""
@@ -478,7 +480,8 @@ def main(data_dir='diagnostics/python_data', exclude_subjects=None):
             weights = 1.0 / counts
             sample_weights = weights[dom_train]
             import torch.utils.data as tud
-            sampler = tud.WeightedRandomSampler(weights=torch.DoubleTensor(sample_weights), num_samples=len(sample_weights), replacement=True)
+            sampler = tud.WeightedRandomSampler(weights=torch.DoubleTensor(sample_weights), 
+                                                 num_samples=len(sample_weights), replacement=True)
             train_loader = DataLoader(train_dataset, batch_size=32, sampler=sampler, shuffle=False)
         else:
             train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)

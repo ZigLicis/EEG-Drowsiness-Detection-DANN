@@ -26,8 +26,11 @@ from sklearn.metrics import accuracy_score
 import argparse
 from datetime import datetime
 
-torch.manual_seed(43)
-np.random.seed(43)
+# Simple seed setting
+torch.manual_seed(42)
+np.random.seed(42)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(42)
 
 def load_matlab_v73(filename):
     """Load MATLAB v7.3 files using h5py"""
