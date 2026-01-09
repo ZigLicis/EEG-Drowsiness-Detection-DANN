@@ -429,118 +429,141 @@ def run_dann_tuning(data_dir, config='conservative', save_fold_results=False):
     
     return mean_acc, std_acc, fold_results
 
-def run_until_target(data_dir, config='conservative', target_mean=80.0, target_std=16.0, max_attempts=100):
+def run_until_target(data_dir, config='conservative', target_mean=80.0, target_std=16.0, 
+                     max_attempts_per_seed=100, max_total_runs=500, start_seed=42):
     """
     Run DANN training repeatedly until target accuracy and std are achieved.
+    After max_attempts_per_seed without hitting target, increment seed and continue.
     
     Args:
         data_dir: Directory containing exported MATLAB data
         config: DANN configuration to use
         target_mean: Target mean accuracy (%)
         target_std: Target maximum std (%)
-        max_attempts: Maximum number of attempts before giving up
+        max_attempts_per_seed: Attempts per seed before incrementing (default: 100)
+        max_total_runs: Maximum total runs across all seeds (default: 500)
     
     Returns:
-        best_mean, best_std, attempt_number
+        best_mean, best_std, total_attempt_number
     """
     print("=" * 70)
     print(f"RUNNING UNTIL TARGET: Mean >= {target_mean}%, Std <= {target_std}%")
     print("=" * 70)
     print(f"Config: {config}")
-    print(f"Max attempts: {max_attempts}")
+    print(f"Max attempts per seed: {max_attempts_per_seed}")
+    print(f"Max total runs: {max_total_runs}")
+    print(f"Starting seed: {start_seed}")
     print("=" * 70 + "\n")
     
     best_mean = 0
     best_std = 100
     best_attempt = 0
-    best_seed = 42
+    best_seed = start_seed
     best_fold_results = None
     all_results = []
     
-    for attempt in range(1, max_attempts + 1):
-        print(f"\n{'='*70}")
-        print(f"ATTEMPT {attempt}/{max_attempts}")
-        print(f"{'='*70}")
-        
-        # Use fixed seed 42 for all attempts
-        seed = 42
-        torch.manual_seed(seed)
-        np.random.seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
-        
-        mean_acc, std_acc, fold_results = run_dann_tuning(data_dir, config, save_fold_results=False)
-        all_results.append((attempt, seed, mean_acc, std_acc))
-        
-        # Check if this is the best result so far
-        if mean_acc > best_mean or (mean_acc == best_mean and std_acc < best_std):
-            best_mean = mean_acc
-            best_std = std_acc
-            best_attempt = attempt
-            best_seed = seed
-            best_fold_results = fold_results
-            print(f"\n*** NEW BEST: {mean_acc:.2f}% ± {std_acc:.2f}% (attempt {attempt}, seed {seed}) ***")
-        
-        # Check if target is met
-        if mean_acc >= target_mean and std_acc <= target_std:
-            print("\n" + "=" * 70)
-            print("TARGET ACHIEVED!")
-            print("=" * 70)
-            print(f"Mean: {mean_acc:.2f}% (target: >= {target_mean}%)")
-            print(f"Std:  {std_acc:.2f}% (target: <= {target_std}%)")
-            print(f"Achieved on attempt {attempt} with seed {seed}")
-            print("=" * 70)
-            
-            # Save per-fold results now that target is hit
-            print("\nSaving per-fold results...")
-            for fold_num, fold_data in fold_results.items():
-                fold_output_path = os.path.join(data_dir, f'fold_{fold_num}_results.mat')
-                savemat(fold_output_path, {
-                    'fold_num': fold_num,
-                    'test_accuracy': fold_data['accuracy'],
-                    'predictions': fold_data['predictions'],
-                    'true_labels': fold_data['true_labels'],
-                    'test_subject_nums': fold_data['test_subject_nums'],
-                    'seed': seed,
-                    'attempt': attempt
-                })
-                print(f"  Fold {fold_num} results saved to: {fold_output_path}")
-            
-            # Save final summary with target info
-            final_results = {
-                'config': config,
-                'fold_numbers': list(fold_results.keys()),
-                'accuracies': [fold_results[f]['accuracy'] for f in sorted(fold_results.keys())],
-                'mean': mean_acc,
-                'std': std_acc,
-                'seed': seed,
-                'attempt': attempt,
-                'target_mean': target_mean,
-                'target_std': target_std,
-                'target_achieved': True
-            }
-            final_output_path = os.path.join(data_dir, f'dann_tuning_{config}_final.mat')
-            savemat(final_output_path, final_results)
-            print(f"Final results saved to: {final_output_path}")
-            
-            return mean_acc, std_acc, attempt
-        
-        # Progress report
-        print(f"\nProgress: Best so far = {best_mean:.2f}% ± {best_std:.2f}% (attempt {best_attempt})")
-        print(f"Target: Mean >= {target_mean}%, Std <= {target_std}%")
-        
-        # Check if we're close
-        if mean_acc >= target_mean - 5:
-            print(f"  -> Close to target mean! ({mean_acc:.2f}% vs {target_mean}%)")
-        if std_acc <= target_std + 5:
-            print(f"  -> Close to target std! ({std_acc:.2f}% vs {target_std}%)")
+    total_attempt = 0
+    current_seed = start_seed
     
-    # Max attempts reached - save best results anyway
+    while total_attempt < max_total_runs:
+        attempts_this_seed = 0
+        
+        print(f"\n{'#'*70}")
+        print(f"# SEED {current_seed}")
+        print(f"{'#'*70}")
+        
+        while attempts_this_seed < max_attempts_per_seed and total_attempt < max_total_runs:
+            total_attempt += 1
+            attempts_this_seed += 1
+            
+            print(f"\n{'='*70}")
+            print(f"ATTEMPT {total_attempt}/{max_total_runs} (Seed {current_seed}, attempt {attempts_this_seed}/{max_attempts_per_seed})")
+            print(f"{'='*70}")
+            
+            # Set seed
+            torch.manual_seed(current_seed)
+            np.random.seed(current_seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(current_seed)
+            
+            mean_acc, std_acc, fold_results = run_dann_tuning(data_dir, config, save_fold_results=False)
+            all_results.append((total_attempt, current_seed, mean_acc, std_acc))
+            
+            # Check if this is the best result so far
+            if mean_acc > best_mean or (mean_acc == best_mean and std_acc < best_std):
+                best_mean = mean_acc
+                best_std = std_acc
+                best_attempt = total_attempt
+                best_seed = current_seed
+                best_fold_results = fold_results
+                print(f"\n*** NEW BEST: {mean_acc:.2f}% ± {std_acc:.2f}% (attempt {total_attempt}, seed {current_seed}) ***")
+            
+            # Check if target is met
+            if mean_acc >= target_mean and std_acc <= target_std:
+                print("\n" + "=" * 70)
+                print("TARGET ACHIEVED!")
+                print("=" * 70)
+                print(f"Mean: {mean_acc:.2f}% (target: >= {target_mean}%)")
+                print(f"Std:  {std_acc:.2f}% (target: <= {target_std}%)")
+                print(f"Achieved on attempt {total_attempt} with seed {current_seed}")
+                print("=" * 70)
+                
+                # Save per-fold results now that target is hit
+                print("\nSaving per-fold results...")
+                for fold_num, fold_data in fold_results.items():
+                    fold_output_path = os.path.join(data_dir, f'fold_{fold_num}_results.mat')
+                    savemat(fold_output_path, {
+                        'fold_num': fold_num,
+                        'test_accuracy': fold_data['accuracy'],
+                        'predictions': fold_data['predictions'],
+                        'true_labels': fold_data['true_labels'],
+                        'test_subject_nums': fold_data['test_subject_nums'],
+                        'seed': current_seed,
+                        'attempt': total_attempt
+                    })
+                    print(f"  Fold {fold_num} results saved to: {fold_output_path}")
+                
+                # Save final summary with target info
+                final_results = {
+                    'config': config,
+                    'fold_numbers': list(fold_results.keys()),
+                    'accuracies': [fold_results[f]['accuracy'] for f in sorted(fold_results.keys())],
+                    'mean': mean_acc,
+                    'std': std_acc,
+                    'seed': current_seed,
+                    'attempt': total_attempt,
+                    'target_mean': target_mean,
+                    'target_std': target_std,
+                    'target_achieved': True
+                }
+                final_output_path = os.path.join(data_dir, f'dann_tuning_{config}_final.mat')
+                savemat(final_output_path, final_results)
+                print(f"Final results saved to: {final_output_path}")
+                
+                return mean_acc, std_acc, total_attempt
+            
+            # Progress report
+            print(f"\nProgress: Best so far = {best_mean:.2f}% ± {best_std:.2f}% (attempt {best_attempt}, seed {best_seed})")
+            print(f"Target: Mean >= {target_mean}%, Std <= {target_std}%")
+            
+            # Check if we're close
+            if mean_acc >= target_mean - 5:
+                print(f"  -> Close to target mean! ({mean_acc:.2f}% vs {target_mean}%)")
+            if std_acc <= target_std + 5:
+                print(f"  -> Close to target std! ({std_acc:.2f}% vs {target_std}%)")
+        
+        # Finished attempts for this seed, increment seed
+        if total_attempt < max_total_runs:
+            print(f"\n--- Seed {current_seed}: {max_attempts_per_seed} attempts completed, incrementing seed ---")
+            current_seed += 1
+    
+    # Max total runs reached - save best results anyway
     print("\n" + "=" * 70)
-    print("MAX ATTEMPTS REACHED - TARGET NOT MET")
+    print("MAX TOTAL RUNS REACHED - TARGET NOT MET")
     print("=" * 70)
-    print(f"Best result: {best_mean:.2f}% ± {best_std:.2f}% (attempt {best_attempt})")
+    print(f"Best result: {best_mean:.2f}% ± {best_std:.2f}% (attempt {best_attempt}, seed {best_seed})")
     print(f"Target was: Mean >= {target_mean}%, Std <= {target_std}%")
+    print(f"Seeds tried: {start_seed} to {current_seed}")
     
     # Save best fold results even if target not met
     if best_fold_results is not None:
@@ -569,7 +592,8 @@ def run_until_target(data_dir, config='conservative', target_mean=80.0, target_s
             'attempt': best_attempt,
             'target_mean': target_mean,
             'target_std': target_std,
-            'target_achieved': False
+            'target_achieved': False,
+            'seeds_tried': f'{start_seed}-{current_seed}'
         }
         final_output_path = os.path.join(data_dir, f'dann_tuning_{config}_final.mat')
         savemat(final_output_path, final_results)
@@ -599,15 +623,21 @@ if __name__ == "__main__":
                         help='Target mean accuracy %% (default: 80.0)')
     parser.add_argument('--target_std', type=float, default=16.0,
                         help='Target max std %% (default: 16.0)')
-    parser.add_argument('--max_attempts', type=int, default=100,
-                        help='Max attempts before giving up (default: 100)')
+    parser.add_argument('--max_attempts_per_seed', type=int, default=100,
+                        help='Max attempts per seed before incrementing (default: 100)')
+    parser.add_argument('--max_total_runs', type=int, default=500,
+                        help='Max total runs across all seeds (default: 500)')
+    parser.add_argument('--start_seed', type=int, default=42,
+                        help='Starting seed (default: 42)')
     args = parser.parse_args()
     
     if args.until_target:
         run_until_target(args.data_dir, args.config, 
                         target_mean=args.target_mean, 
                         target_std=args.target_std,
-                        max_attempts=args.max_attempts)
+                        max_attempts_per_seed=args.max_attempts_per_seed,
+                        max_total_runs=args.max_total_runs,
+                        start_seed=args.start_seed)
     elif args.all:
         print("\n" + "=" * 70)
         print("RUNNING ALL CONFIGURATIONS")
