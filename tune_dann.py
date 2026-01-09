@@ -462,8 +462,8 @@ def run_until_target(data_dir, config='conservative', target_mean=80.0, target_s
         print(f"ATTEMPT {attempt}/{max_attempts}")
         print(f"{'='*70}")
         
-        # Change random seed for each attempt
-        seed = 42 + attempt
+        # Use fixed seed 42 for all attempts
+        seed = 42
         torch.manual_seed(seed)
         np.random.seed(seed)
         if torch.cuda.is_available():

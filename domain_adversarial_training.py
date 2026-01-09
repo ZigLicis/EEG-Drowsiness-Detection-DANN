@@ -495,16 +495,16 @@ def main(data_dir='diagnostics/python_data', exclude_subjects=None):
             
             if has_drozy:
                 # Multi-domain dataset (e.g., TheOriginalEEG + DROZY)
-                subj_to_domain = {i: (1 if s.startswith('Drozy_') else 0) for i, s in enumerate(subs)}
-                # Convert subject labels (0-based) to domain labels
-                dom_train = np.array([subj_to_domain[int(s)] for s in (subject_train - 1)])
-                # Compute class weights inverse to domain freq
-                counts = np.bincount(dom_train, minlength=2) + 1e-6
-                weights = 1.0 / counts
-                sample_weights = weights[dom_train]
-                import torch.utils.data as tud
-                sampler = tud.WeightedRandomSampler(weights=torch.DoubleTensor(sample_weights), num_samples=len(sample_weights), replacement=True)
-                train_loader = DataLoader(train_dataset, batch_size=32, sampler=sampler, shuffle=False)
+            subj_to_domain = {i: (1 if s.startswith('Drozy_') else 0) for i, s in enumerate(subs)}
+            # Convert subject labels (0-based) to domain labels
+            dom_train = np.array([subj_to_domain[int(s)] for s in (subject_train - 1)])
+            # Compute class weights inverse to domain freq
+            counts = np.bincount(dom_train, minlength=2) + 1e-6
+            weights = 1.0 / counts
+            sample_weights = weights[dom_train]
+            import torch.utils.data as tud
+            sampler = tud.WeightedRandomSampler(weights=torch.DoubleTensor(sample_weights), num_samples=len(sample_weights), replacement=True)
+            train_loader = DataLoader(train_dataset, batch_size=32, sampler=sampler, shuffle=False)
                 use_domain_sampling = True
         
         if not use_domain_sampling:
