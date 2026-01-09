@@ -28,11 +28,11 @@ from sklearn.metrics import confusion_matrix, classification_report
 import warnings
 warnings.filterwarnings('ignore')
 
-# Simple seed setting
-torch.manual_seed(43)
-np.random.seed(43)
+# Simple seed setting (matching tune_dann.py)
+torch.manual_seed(42)
+np.random.seed(42)
 if torch.cuda.is_available():
-    torch.cuda.manual_seed_all(43)
+    torch.cuda.manual_seed_all(42)
 
 def load_matlab_v73(filename):
     """Load MATLAB v7.3 files using h5py"""
@@ -183,19 +183,25 @@ class EEGDataset(Dataset):
         return self.X[idx], self.y_drowsiness[idx], self.y_subject[idx]
 
 def train_domain_adversarial_model(train_loader, val_loader, model, device, 
-                                 num_epochs=120, lr=0.0003):
+                                 num_epochs=150, lr=0.0005):
     """
     Train the domain adversarial model
+    
+    Hyperparameters matched to tune_dann.py 'conservative' config:
+    - Very gentle domain adaptation - prioritize task performance
+    - lambda_max=0.3, lambda_speed=3 (slower ramp)
+    - domain_weight: 0.02 -> 0.1 over 60% of training
+    - patience=30, label_smoothing=0.05
     """
-    # Loss functions
-    drowsiness_criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    # Loss functions (matching tune_dann.py conservative config)
+    drowsiness_criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
     subject_criterion = nn.CrossEntropyLoss()
     
-    # Optimizer and LR schedule: AdamW + cosine decay with warmup
-    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    # Optimizer and LR schedule: AdamW + cosine decay with warmup (matching tune_dann.py)
+    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=5e-5)
     warmup_epochs = max(1, int(0.1 * num_epochs))
     cosine_epochs = max(1, num_epochs - warmup_epochs)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cosine_epochs, eta_min=lr * 0.1)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cosine_epochs, eta_min=lr * 0.05)
     
     # Training history
     train_history = {'drowsiness_loss': [], 'subject_loss': [], 'total_loss': []}
@@ -203,6 +209,15 @@ def train_domain_adversarial_model(train_loader, val_loader, model, device,
     
     best_val_acc = 0.0
     patience_counter = 0
+    best_model_state = None  # Store best model in memory (matching tune_dann.py)
+    
+    # Conservative config parameters (matching tune_dann.py)
+    lambda_max = 0.3
+    lambda_speed = 3
+    domain_weight_min = 0.02
+    domain_weight_max = 0.1
+    domain_ramp_frac = 0.6
+    patience = 30
     
     for epoch in range(num_epochs):
         model.train()
@@ -218,14 +233,14 @@ def train_domain_adversarial_model(train_loader, val_loader, model, device,
         else:
             scheduler.step()
 
-        # Dynamic lambda for gradient reversal (more aggressive schedule)
-        lambda_ = 2.0 / (1.0 + np.exp(-25 * epoch / num_epochs)) - 1.0
-
-        # Dynamic domain loss weight ramp (0.2 -> 0.8 over first 20% epochs)
-        min_w, max_w, ramp_frac = 0.2, 0.8, 0.2
         progress = epoch / num_epochs
-        ramp = min(1.0, progress / ramp_frac)
-        domain_weight = min_w + (max_w - min_w) * ramp
+        
+        # Dynamic lambda for gradient reversal (conservative: slower ramp, lower max)
+        lambda_ = lambda_max * (2.0 / (1.0 + np.exp(-lambda_speed * progress)) - 1.0)
+
+        # Dynamic domain loss weight ramp (conservative: 0.02 -> 0.1 over 60% of training)
+        ramp = min(1.0, progress / domain_ramp_frac)
+        domain_weight = domain_weight_min + (domain_weight_max - domain_weight_min) * ramp
         
         for batch_idx, (data, drowsiness_labels, subject_labels) in enumerate(train_loader):
             data = data.to(device)
@@ -283,19 +298,19 @@ def train_domain_adversarial_model(train_loader, val_loader, model, device,
         val_history['accuracy'].append(val_acc)
         val_history['loss'].append(val_loss)
         
-        # Early stopping
+        # Early stopping (matching tune_dann.py: patience=30)
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             patience_counter = 0
-            # Save best model
-            torch.save(model.state_dict(), 'best_model.pth')
+            # Save best model in memory (matching tune_dann.py)
+            best_model_state = model.state_dict().copy()
         else:
             patience_counter += 1
-            if patience_counter >= 15:
+            if patience_counter >= patience:
                 print(f'Early stopping at epoch {epoch+1}')
                 break
         
-        if (epoch + 1) % 10 == 0:
+        if (epoch + 1) % 25 == 0:
             current_lr = optimizer.param_groups[0]['lr']
             print(f'Epoch [{epoch+1}/{num_epochs}], '
                   f'Drowsiness Loss: {epoch_drowsiness_loss/len(train_loader):.4f}, '
@@ -303,8 +318,9 @@ def train_domain_adversarial_model(train_loader, val_loader, model, device,
                   f'Val Acc: {val_acc:.4f}, Lambda: {lambda_:.4f}, '
                   f'DomainW: {domain_weight:.2f}, LR: {current_lr:.6f}')
     
-    # Load best model
-    model.load_state_dict(torch.load('best_model.pth'))
+    # Load best model from memory (matching tune_dann.py)
+    if best_model_state is not None:
+        model.load_state_dict(best_model_state)
     return model, train_history, val_history
 
 def evaluate_model(model, test_loader, device):
@@ -464,29 +480,13 @@ def main(data_dir='diagnostics/python_data', exclude_subjects=None):
         val_dataset = EEGDataset(X_val, y_val, subject_val)
         test_dataset = EEGDataset(X_test, y_test, subject_test)
         
-        # Balanced domain sampling: weight samples so domains are balanced
-        # Infer domain id from subject id: assume subjects 1..N_orig are original, rest are DROZY
-        # We detect domain by checking unique_subjects names
-        unique_subjects_py = metadata['unique_subjects'] if 'unique_subjects' in metadata else None
-        domain_weights = None
-        if unique_subjects_py is not None:
-            # Build subject->domain map
-            subs = [s.decode('utf-8') if isinstance(s, bytes) else str(s) for s in unique_subjects_py]
-            subj_to_domain = {i: (1 if s.startswith('Drozy_') else 0) for i, s in enumerate(subs)}
-            # Convert subject labels (0-based) to domain labels
-            dom_train = np.array([subj_to_domain[int(s)] for s in (subject_train - 1)])
-            # Compute class weights inverse to domain freq
-            counts = np.bincount(dom_train, minlength=2) + 1e-6
-            weights = 1.0 / counts
-            sample_weights = weights[dom_train]
-            import torch.utils.data as tud
-            sampler = tud.WeightedRandomSampler(weights=torch.DoubleTensor(sample_weights), 
-                                                 num_samples=len(sample_weights), replacement=True)
-            train_loader = DataLoader(train_dataset, batch_size=32, sampler=sampler, shuffle=False)
-        else:
-            train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+        # Simple shuffle for training (matching tune_dann.py)
+        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
         val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
         test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+        
+        # Store unique_subjects for later use
+        unique_subjects_py = metadata['unique_subjects'] if 'unique_subjects' in metadata else None
         
         # Create model
         input_shape = (1, X_train.shape[2], X_train.shape[3])  # (channels, freq, electrodes)
@@ -494,9 +494,9 @@ def main(data_dir='diagnostics/python_data', exclude_subjects=None):
         
         print(f"Model created with input shape: {input_shape}")
         
-        # Train model
+        # Train model (using conservative config defaults: num_epochs=150, lr=0.0005)
         model, train_history, val_history = train_domain_adversarial_model(
-            train_loader, val_loader, model, device, num_epochs=120, lr=0.0003
+            train_loader, val_loader, model, device
         )
         
         # Evaluate on test set
