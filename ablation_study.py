@@ -432,17 +432,26 @@ def train_pytorch_model(model, train_loader, val_loader, device, num_epochs=100,
     
     return model, best_val_acc
 
-def train_dann_model(model, train_loader, val_loader, device, num_epochs=120, lr=0.0003):
-    """Train the DANN model with domain adversarial training"""
-    # Loss functions
-    drowsiness_criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+def train_dann_model(model, train_loader, val_loader, device, num_epochs=150, lr=0.0005):
+    """
+    Train the DANN model with TUNED domain adversarial training
+    
+    Key changes from aggressive version:
+    1. Much lower domain weight (0.05-0.15 instead of 0.2-0.8)
+    2. Slower lambda ramp (gentler gradient reversal)
+    3. Longer patience for early stopping (25 instead of 15)
+    4. Higher learning rate with longer training
+    5. Focus on drowsiness task first, then gradually add domain adaptation
+    """
+    # Loss functions - reduced label smoothing
+    drowsiness_criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
     subject_criterion = nn.CrossEntropyLoss()
     
-    # Optimizer with cosine annealing
-    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
-    warmup_epochs = max(1, int(0.1 * num_epochs))
+    # Optimizer - slightly higher LR, less weight decay
+    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=5e-5)
+    warmup_epochs = max(1, int(0.15 * num_epochs))  # Longer warmup
     cosine_epochs = max(1, num_epochs - warmup_epochs)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cosine_epochs, eta_min=lr * 0.1)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cosine_epochs, eta_min=lr * 0.05)
     
     best_val_acc = 0.0
     patience_counter = 0
@@ -461,12 +470,16 @@ def train_dann_model(model, train_loader, val_loader, device, num_epochs=120, lr
         else:
             scheduler.step()
 
-        # Dynamic lambda for gradient reversal
-        lambda_ = 2.0 / (1.0 + np.exp(-25 * epoch / num_epochs)) - 1.0
-
-        # Dynamic domain loss weight
-        min_w, max_w, ramp_frac = 0.2, 0.8, 0.2
+        # TUNED: Much gentler lambda schedule - starts at 0, slowly ramps to 0.5 max
+        # Original: lambda_ = 2.0 / (1.0 + np.exp(-25 * epoch / num_epochs)) - 1.0
+        # This was too aggressive (reaches 0.73 at epoch 20, 0.96 at epoch 40)
+        # New: slower sigmoid, capped at 0.5
         progress = epoch / num_epochs
+        lambda_ = 0.5 * (2.0 / (1.0 + np.exp(-5 * progress)) - 1.0)  # Max 0.5, slower ramp
+
+        # TUNED: Much lower domain weight (0.05 to 0.15)
+        # Original: 0.2 to 0.8 - way too aggressive, destroyed task features
+        min_w, max_w, ramp_frac = 0.05, 0.15, 0.5  # Ramp over 50% of training
         ramp = min(1.0, progress / ramp_frac)
         domain_weight = min_w + (max_w - min_w) * ramp
         
@@ -484,7 +497,7 @@ def train_dann_model(model, train_loader, val_loader, device, num_epochs=120, lr
             drowsiness_loss = drowsiness_criterion(drowsiness_pred, drowsiness_labels)
             subject_loss = subject_criterion(subject_pred, subject_labels)
             
-            # Total loss
+            # Total loss - drowsiness is primary, domain is secondary regularizer
             total_loss = drowsiness_loss + domain_weight * subject_loss
             
             # Backward pass
@@ -512,19 +525,19 @@ def train_dann_model(model, train_loader, val_loader, device, num_epochs=120, lr
         
         val_acc = val_correct / val_total
         
-        # Early stopping
+        # TUNED: Longer patience (25 instead of 15)
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             patience_counter = 0
             best_model_state = model.state_dict().copy()
         else:
             patience_counter += 1
-            if patience_counter >= 15:
+            if patience_counter >= 25:
                 print(f"  Early stopping at epoch {epoch+1}")
                 break
         
         if (epoch + 1) % 20 == 0:
-            print(f"  Epoch [{epoch+1}/{num_epochs}] Val Acc: {val_acc:.4f}, Lambda: {lambda_:.4f}")
+            print(f"  Epoch [{epoch+1}/{num_epochs}] Val Acc: {val_acc:.4f}, Lambda: {lambda_:.3f}, DomW: {domain_weight:.3f}")
     
     # Load best model
     if best_model_state is not None:
