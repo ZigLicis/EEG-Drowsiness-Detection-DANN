@@ -102,19 +102,18 @@ class SVMClassifier:
     """SVM classifier for EEG drowsiness detection"""
     
     def __init__(self, kernel='rbf', C=1.0, gamma='scale'):
-        self.scaler = StandardScaler()
-        self.model = SVC(kernel=kernel, C=C, gamma=gamma, probability=True, random_state=43)
+        # C=1.0 is standard default (was 10.0 which could cause overfitting)
+        # No StandardScaler - data should be pre-normalized like CNN/DANN
+        self.model = SVC(kernel=kernel, C=C, gamma=gamma, probability=True, random_state=42)
         
     def fit(self, X_train, y_train):
-        # Flatten the spectral features
+        # Flatten the spectral features (data already normalized)
         X_flat = X_train.reshape(X_train.shape[0], -1)
-        X_scaled = self.scaler.fit_transform(X_flat)
-        self.model.fit(X_scaled, y_train)
+        self.model.fit(X_flat, y_train)
         
     def predict(self, X):
         X_flat = X.reshape(X.shape[0], -1)
-        X_scaled = self.scaler.transform(X_flat)
-        return self.model.predict(X_scaled)
+        return self.model.predict(X_flat)
     
     def score(self, X, y):
         predictions = self.predict(X)
@@ -677,14 +676,13 @@ def run_ablation_study(data_dir, models_to_run=['svm', 'cnn', 'cnn_lstm', 'dann'
         # =====================================================================
         if 'svm' in models_to_run:
             print("\n--- Training SVM ---")
-            svm = SVMClassifier(kernel='rbf', C=10.0, gamma='scale')
+            # C=1.0 is standard default for fair comparison (not C=10.0 which could overfit)
+            # Data is already normalized (same as CNN/DANN), no double normalization
+            svm = SVMClassifier(kernel='rbf', C=1.0, gamma='scale')
             
-            # Flatten for SVM
-            X_train_flat = X_train_pt.reshape(X_train_pt.shape[0], -1)
-            X_test_flat = X_test_pt.reshape(X_test_pt.shape[0], -1)
-            
-            svm.fit(X_train_flat, y_train)
-            svm_predictions = svm.predict(X_test_flat)
+            # Data already normalized at lines 665-667, same as CNN/DANN
+            svm.fit(X_train_pt, y_train)
+            svm_predictions = svm.predict(X_test_pt)
             svm_acc = accuracy_score(y_test, svm_predictions)
             
             results['svm']['accuracies'].append(svm_acc)
