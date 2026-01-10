@@ -47,7 +47,7 @@ def reconstruct_time_series(freq_image, fs=250, duration=5):
     
     return time_series, t
 
-def plot_eeg_comparison(fold_num=1, save_plots=True):
+def plot_eeg_comparison(fold_num=2, save_plots=True):
     """
     Create comparison plots of drowsy vs normal EEG samples
     """
@@ -55,7 +55,7 @@ def plot_eeg_comparison(fold_num=1, save_plots=True):
     
     # Load fold data
     try:
-        fold_data = load_matlab_v73(f'diagnostics/python_data_80.8+17.7/fold_{fold_num}_data.mat')
+        fold_data = load_matlab_v73(f'diagnostics/python_data/fold_{fold_num}_data.mat')
     except Exception as e:
         print(f"Error loading fold {fold_num}: {e}")
         return
@@ -246,7 +246,7 @@ def main():
     print("=== EEG Time-Series and Frequency Domain Visualization ===")
     
     # Check if data exists
-    if not os.path.exists('diagnostics/python_data_80.8+17.7'):
+    if not os.path.exists('diagnostics/python_data'):
         print("Error: No exported data found. Run MATLAB preprocessing first.")
         return
     

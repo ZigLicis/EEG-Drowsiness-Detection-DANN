@@ -7,10 +7,9 @@
 %    corresponding 'Normal' and 'Fatigued' state EEG files.
 % 2. Basic Preprocessing: For each file, it performs basic preprocessing ONLY:
 %    - Channel selection (frontal channels + reference)
-%    - Bandpass filtering (0.5-50 Hz)
+%    - Bandpass filtering (1-45 Hz)
 %    - Downsampling (250 Hz)
 %    - Re-referencing to linked mastoids
-%    NOTE: SKIPS vEOG regression and ICA artifact removal
 % 3. Data Preparation (Step 3): The preprocessed, continuous data is segmented
 %    into 2-second, non-overlapping windows of raw time-series data.
 % 4. Data Partitioning: The windowed data from all subjects is aggregated
@@ -34,7 +33,7 @@ data_root_path = '/Users/ziglicis/Desktop/Research/ResearchDatasets/TheOriginalE
 % Preprocessing Parameters (passed to step1)
 low_cutoff_freq  = 1;
 high_cutoff_freq = 45;
-downsample_rate  = ;
+downsample_rate  = 250;
 frontal_channels = {'FP1', 'FP2', 'F7', 'F3', 'FZ', 'F4', 'F8'};
 % Use average reference for cross-dataset consistency
 ref_channels     = {'A1', 'A2'};
@@ -49,11 +48,11 @@ drozy_mat_path = fullfile(pwd, 'Drozy.mat');
 drozy_converted_path = fullfile(pwd, 'converted_drozy.mat');
 
 % Visualization Parameters
-enable_visualization = true; % Set to true to generate before/after plots
+enable_visualization = false; % Set to true to generate before/after plots
 viz_subject_limit = 12; % Only visualize first N subjects (set to Inf for all)
 
 % ICA Manual Review Parameters
-manual_ica_review = true;  % Set to true to manually select ICA components to reject
+manual_ica_review = false;  % Set to true to manually select ICA components to reject
                             % When true, you'll see IC time series and can choose which to reject
                             % When false, uses automatic ICLabel-based rejection
 
