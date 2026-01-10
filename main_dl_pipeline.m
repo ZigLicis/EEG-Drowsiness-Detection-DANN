@@ -32,9 +32,9 @@
 data_root_path = '/Users/ziglicis/Desktop/Research/ResearchDatasets/TheOriginalEEG'; 
 
 % Preprocessing Parameters (passed to step1)
-low_cutoff_freq  = 0.5;
-high_cutoff_freq = 50;
-downsample_rate  = 250;
+low_cutoff_freq  = 1;
+high_cutoff_freq = 30;
+downsample_rate  = 128;
 frontal_channels = {'FP1', 'FP2', 'F7', 'F3', 'FZ', 'F4', 'F8'};
 % Use average reference for cross-dataset consistency
 ref_channels     = {'A1', 'A2'};
