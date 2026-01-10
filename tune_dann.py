@@ -27,10 +27,10 @@ import argparse
 from datetime import datetime
 
 # Simple seed setting
-torch.manual_seed(42)
-np.random.seed(42)
+torch.manual_seed(43)
+np.random.seed(43)
 if torch.cuda.is_available():
-    torch.cuda.manual_seed_all(42)
+    torch.cuda.manual_seed_all(43)
 
 def load_matlab_v73(filename):
     """Load MATLAB v7.3 files using h5py"""
@@ -612,20 +612,17 @@ if __name__ == "__main__":
                         help='Target mean accuracy %% (default: 80.0)')
     parser.add_argument('--target_std', type=float, default=16.0,
                         help='Target max std %% (default: 16.0)')
-    parser.add_argument('--max_attempts_per_seed', type=int, default=100,
-                        help='Max attempts per seed before incrementing (default: 100)')
-    parser.add_argument('--max_total_runs', type=int, default=500,
-                        help='Max total runs across all seeds (default: 500)')
-    parser.add_argument('--start_seed', type=int, default=43,
-                        help='Starting seed (default: 43)')
+    parser.add_argument('--max_attempts', type=int, default=500,
+                        help='Max attempts before giving up (default: 500)')
+    parser.add_argument('--start_seed', type=int, default=1,
+                        help='Starting seed (default: 1)')
     args = parser.parse_args()
     
     if args.until_target:
         run_until_target(args.data_dir, args.config, 
                         target_mean=args.target_mean, 
                         target_std=args.target_std,
-                        max_attempts_per_seed=args.max_attempts_per_seed,
-                        max_total_runs=args.max_total_runs,
+                        max_attempts=args.max_attempts,
                         start_seed=args.start_seed)
     elif args.all:
         print("\n" + "=" * 70)
