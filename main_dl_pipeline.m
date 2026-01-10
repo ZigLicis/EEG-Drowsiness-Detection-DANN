@@ -33,8 +33,8 @@ data_root_path = '/Users/ziglicis/Desktop/Research/ResearchDatasets/TheOriginalE
 
 % Preprocessing Parameters (passed to step1)
 low_cutoff_freq  = 1;
-high_cutoff_freq = 30;
-downsample_rate  = 128;
+high_cutoff_freq = 45;
+downsample_rate  = ;
 frontal_channels = {'FP1', 'FP2', 'F7', 'F3', 'FZ', 'F4', 'F8'};
 % Use average reference for cross-dataset consistency
 ref_channels     = {'A1', 'A2'};
@@ -51,6 +51,11 @@ drozy_converted_path = fullfile(pwd, 'converted_drozy.mat');
 % Visualization Parameters
 enable_visualization = true; % Set to true to generate before/after plots
 viz_subject_limit = 12; % Only visualize first N subjects (set to Inf for all)
+
+% ICA Manual Review Parameters
+manual_ica_review = true;  % Set to true to manually select ICA components to reject
+                            % When true, you'll see IC time series and can choose which to reject
+                            % When false, uses automatic ICLabel-based rejection
 
 % --- END OF PARAMETERS ---
 
@@ -150,7 +155,11 @@ for i = 1:length(subject_folders)
         % This includes: channel selection, filtering, downsampling, re-referencing
         % This EXCLUDES: vEOG regression-based blink removal, ICA artifact removal
         EEG = step1_preprocess_data(EEG, low_cutoff_freq, high_cutoff_freq, downsample_rate, frontal_channels, ref_channels, should_visualize);
-        EEG = step2_run_ica_and_iclabel(EEG, should_visualize);
+        
+        % ICA and ICLabel artifact removal
+        % If manual_ica_review is true, you'll be prompted to select components
+        subject_file_id = sprintf('%s_%s', subject_id, file_info.label);
+        EEG = step2_run_ica_and_iclabel(EEG, should_visualize, subject_file_id, manual_ica_review);
 
         
         % Prepare sequence data
@@ -190,7 +199,8 @@ if ~isempty(drozy_sessions)
         end
         % Step 2 (best-effort)
         try
-            EEG = step2_run_ica_and_iclabel(EEG, should_visualize_drozy);
+            drozy_file_id = sprintf('Drozy_%s_%s', subject_id, label);
+            EEG = step2_run_ica_and_iclabel(EEG, should_visualize_drozy, drozy_file_id, manual_ica_review);
         catch ME
             warning('DROZY %s (%s) ICA/ICLabel failed, proceeding without IC rejection: %s', subject_id, label, ME.message);
         end

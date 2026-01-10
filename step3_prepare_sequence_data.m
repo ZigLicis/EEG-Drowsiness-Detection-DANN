@@ -41,44 +41,18 @@ while (current_pos + window_length_pnts - 1) <= EEG.pnts
     window_end = current_pos + window_length_pnts - 1;
     data_segment = EEG.data(:, current_pos:window_end);
     
-    %% --- Convert to Power Spectral Density (PSD) image (freq × channels × 1) ---
-    % Using PSD (squared magnitude, normalized) to match literature approach
-    % Reference: "An EEG-Based Transfer Learning Method for Cross-Subject 
-    % Fatigue Mental State Prediction" (Sensors 2021)
-    
+    %% --- Convert to frequency-domain image (freq × channels × 1) ---
+    % Ensure each segment has 1024 points (resample or zero-pad)
     targetLen = 1024;
-    data_segment = double(data_segment); % ensure double precision
+    data_segment = double(data_segment); % ensure double precision for resample
     if size(data_segment,2) ~= targetLen
         data_segment = resample(data_segment', targetLen, size(data_segment,2))'; % channels × 1024
     end
-    
-    % Compute PSD: |FFT|^2 / N (power spectral density)
-    fft_result = fft(data_segment, targetLen, 2);           % channels × 1024
-    psd = (abs(fft_result).^2) / targetLen;                 % Power: |FFT|^2 / N
-    
-    % Keep one-sided spectrum (positive frequencies only)
-    % For real signals, PSD is symmetric, so we keep first half and double it
-    n_freqs = floor(targetLen/2) + 1;                       % 513 bins for 1024-point FFT
-    psd = psd(:, 1:n_freqs);                                % channels × 513
-    psd(:, 2:end-1) = 2 * psd(:, 2:end-1);                  % Double non-DC, non-Nyquist bins
-    
-    % Keep frequencies up to ~30 Hz (relevant for drowsiness: delta, theta, alpha, beta)
-    % Frequency resolution = fs / targetLen
-    % For fs=250 Hz: each bin = 250/1024 ≈ 0.244 Hz, 30 Hz ≈ 123 bins
-    % For fs=128 Hz: each bin = 128/1024 = 0.125 Hz, 30 Hz ≈ 241 bins
-    freq_resolution = EEG.srate / targetLen;
-    max_freq_hz = 30;
-    freq_bins_to_keep = min(n_freqs, ceil(max_freq_hz / freq_resolution) + 1);
-    psd = psd(:, 1:freq_bins_to_keep);                      % channels × freq_bins
-    
-    % Print info on first window only
-    if window_count == 1
-        fprintf('  PSD: fs=%d Hz, freq_res=%.3f Hz/bin, keeping %d bins (0-%.1f Hz)\n', ...
-            EEG.srate, freq_resolution, freq_bins_to_keep, max_freq_hz);
-    end
-    
+    % FFT along time
+    spec = abs(fft(data_segment, targetLen, 2));    % channels × 1024
+    spec = spec(:,1:128);                            % keep up to 128 Hz (assuming 250 Hz fs)
     % Rearrange to freq × channels × 1
-    img = permute(psd, [2 1]);                              % freq_bins × channels
+    img = permute(spec, [2 1]);                      % 128 × channels
     img = reshape(img, [size(img,1), size(img,2), 1]);
     
     % Store the image and its label
