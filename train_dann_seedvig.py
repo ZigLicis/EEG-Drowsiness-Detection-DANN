@@ -491,7 +491,7 @@ def main():
     print("\nUsing Gradient Reversal Layer to learn subject-invariant features\n")
     
     # ==================== Configuration ====================
-    data_path = 'data/SEED-VIG_Extracted/SEED_VIG.mat'
+    data_path = 'diagnostics/python_data_seedvig_psd'
     output_dir = 'results_dann_seedvig'
     
     # Training hyperparameters
