@@ -22,7 +22,7 @@ from torch.utils.data import Dataset, DataLoader
 import torch.nn.functional as F
 from scipy.io import savemat
 import h5py
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, confusion_matrix
 import argparse
 from datetime import datetime
 
@@ -379,15 +379,26 @@ def run_dann_tuning(data_dir, config='conservative', save_fold_results=False):
         acc, predictions, true_labels = evaluate_model(model, test_loader, device)
         accuracies.append(acc)
         
+        # Compute confusion matrix values (for binary: TN, FP, FN, TP)
+        cm = confusion_matrix(true_labels, predictions)
+        if cm.shape == (2, 2):
+            tn, fp, fn, tp = cm.ravel()
+        else:
+            tn, fp, fn, tp = 0, 0, 0, 0  # Handle non-binary case
+        
         # Store fold results
         fold_results[fold_num] = {
             'accuracy': acc,
             'predictions': np.array(predictions),
             'true_labels': np.array(true_labels),
-            'test_subject_nums': subject_test
+            'test_subject_nums': subject_test,
+            'tn': int(tn),
+            'fp': int(fp),
+            'fn': int(fn),
+            'tp': int(tp)
         }
         
-        print(f"  Test Accuracy: {acc*100:.2f}%\n")
+        print(f"  Test Accuracy: {acc*100:.2f}% (TP={tp}, TN={tn}, FP={fp}, FN={fn})\n")
     
     # Summary
     print("=" * 70)
@@ -402,6 +413,26 @@ def run_dann_tuning(data_dir, config='conservative', save_fold_results=False):
     print(f"\nOverall: {mean_acc:.2f}% ± {std_acc:.2f}%")
     print("=" * 70)
     
+    # Aggregate confusion matrix values across folds
+    total_tn = sum(fold_results[f]['tn'] for f in fold_numbers)
+    total_fp = sum(fold_results[f]['fp'] for f in fold_numbers)
+    total_fn = sum(fold_results[f]['fn'] for f in fold_numbers)
+    total_tp = sum(fold_results[f]['tp'] for f in fold_numbers)
+    
+    # Calculate additional metrics
+    precision = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0
+    recall = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+    specificity = total_tn / (total_tn + total_fp) if (total_tn + total_fp) > 0 else 0
+    
+    print(f"\nConfusion Matrix Summary (across all folds):")
+    print(f"  TP={total_tp}, TN={total_tn}, FP={total_fp}, FN={total_fn}")
+    print(f"  Precision: {precision*100:.2f}%")
+    print(f"  Recall (Sensitivity): {recall*100:.2f}%")
+    print(f"  Specificity: {specificity*100:.2f}%")
+    print(f"  F1-Score: {f1*100:.2f}%")
+    print("=" * 70)
+    
     # Save summary results
     results = {
         'config': config,
@@ -409,6 +440,21 @@ def run_dann_tuning(data_dir, config='conservative', save_fold_results=False):
         'accuracies': accuracies,
         'mean': mean_acc,
         'std': std_acc,
+        # Per-fold confusion matrix values
+        'tn_per_fold': [fold_results[f]['tn'] for f in fold_numbers],
+        'fp_per_fold': [fold_results[f]['fp'] for f in fold_numbers],
+        'fn_per_fold': [fold_results[f]['fn'] for f in fold_numbers],
+        'tp_per_fold': [fold_results[f]['tp'] for f in fold_numbers],
+        # Totals
+        'total_tn': total_tn,
+        'total_fp': total_fp,
+        'total_fn': total_fn,
+        'total_tp': total_tp,
+        # Derived metrics
+        'precision': precision * 100,
+        'recall': recall * 100,
+        'specificity': specificity * 100,
+        'f1_score': f1 * 100,
     }
     output_path = os.path.join(data_dir, f'dann_tuning_{config}.mat')
     savemat(output_path, results)
@@ -423,7 +469,11 @@ def run_dann_tuning(data_dir, config='conservative', save_fold_results=False):
                 'test_accuracy': fold_data['accuracy'],
                 'predictions': fold_data['predictions'],
                 'true_labels': fold_data['true_labels'],
-                'test_subject_nums': fold_data['test_subject_nums']
+                'test_subject_nums': fold_data['test_subject_nums'],
+                'tn': fold_data['tn'],
+                'fp': fold_data['fp'],
+                'fn': fold_data['fn'],
+                'tp': fold_data['tp']
             })
             print(f"Fold {fold_num} results saved to: {fold_output_path}")
     

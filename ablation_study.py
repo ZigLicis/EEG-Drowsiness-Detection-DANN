@@ -653,8 +653,14 @@ def run_ablation_study(data_dir, models_to_run=['svm', 'cnn', 'cnn_lstm', 'dann'
     fold_numbers = sorted([int(f.split('_')[1]) for f in fold_files])
     print(f"Found {len(fold_numbers)} folds")
     
-    # Results storage
-    results = {model: {'accuracies': [], 'fold_nums': []} for model in models_to_run}
+    # Results storage - now includes predictions, true labels, and confusion matrix values
+    results = {model: {
+        'accuracies': [], 
+        'fold_nums': [],
+        'predictions': [],      # Store predictions per fold
+        'true_labels': [],      # Store true labels per fold
+        'tn': [], 'fp': [], 'fn': [], 'tp': []  # Confusion matrix values per fold
+    } for model in models_to_run}
     
     # Process each fold
     for fold_num in fold_numbers:
@@ -711,9 +717,22 @@ def run_ablation_study(data_dir, models_to_run=['svm', 'cnn', 'cnn_lstm', 'dann'
             svm_predictions = svm.predict(X_test_pt)
             svm_acc = accuracy_score(y_test, svm_predictions)
             
+            # Compute confusion matrix values (for binary: TN, FP, FN, TP)
+            cm = confusion_matrix(y_test, svm_predictions)
+            if cm.shape == (2, 2):
+                tn, fp, fn, tp = cm.ravel()
+            else:
+                tn, fp, fn, tp = 0, 0, 0, 0  # Handle non-binary case
+            
             results['svm']['accuracies'].append(svm_acc)
             results['svm']['fold_nums'].append(fold_num)
-            print(f"SVM Accuracy: {svm_acc*100:.2f}%")
+            results['svm']['predictions'].append(svm_predictions.tolist())
+            results['svm']['true_labels'].append(y_test.tolist())
+            results['svm']['tn'].append(int(tn))
+            results['svm']['fp'].append(int(fp))
+            results['svm']['fn'].append(int(fn))
+            results['svm']['tp'].append(int(tp))
+            print(f"SVM Accuracy: {svm_acc*100:.2f}% (TP={tp}, TN={tn}, FP={fp}, FN={fn})")
         
         # =====================================================================
         # Model 2: CNN (without domain adversarial)
@@ -741,9 +760,23 @@ def run_ablation_study(data_dir, models_to_run=['svm', 'cnn', 'cnn_lstm', 'dann'
             )
             
             cnn_acc, cnn_preds, cnn_true = evaluate_pytorch_model(cnn_model, test_loader, device)
+            
+            # Compute confusion matrix values
+            cm = confusion_matrix(cnn_true, cnn_preds)
+            if cm.shape == (2, 2):
+                tn, fp, fn, tp = cm.ravel()
+            else:
+                tn, fp, fn, tp = 0, 0, 0, 0
+            
             results['cnn']['accuracies'].append(cnn_acc)
             results['cnn']['fold_nums'].append(fold_num)
-            print(f"CNN Accuracy: {cnn_acc*100:.2f}%")
+            results['cnn']['predictions'].append(cnn_preds)
+            results['cnn']['true_labels'].append(cnn_true)
+            results['cnn']['tn'].append(int(tn))
+            results['cnn']['fp'].append(int(fp))
+            results['cnn']['fn'].append(int(fn))
+            results['cnn']['tp'].append(int(tp))
+            print(f"CNN Accuracy: {cnn_acc*100:.2f}% (TP={tp}, TN={tn}, FP={fp}, FN={fn})")
         
         # =====================================================================
         # Model 3: CNN-LSTM
@@ -771,9 +804,23 @@ def run_ablation_study(data_dir, models_to_run=['svm', 'cnn', 'cnn_lstm', 'dann'
             )
             
             lstm_acc, lstm_preds, lstm_true = evaluate_pytorch_model(lstm_model, test_loader, device)
+            
+            # Compute confusion matrix values
+            cm = confusion_matrix(lstm_true, lstm_preds)
+            if cm.shape == (2, 2):
+                tn, fp, fn, tp = cm.ravel()
+            else:
+                tn, fp, fn, tp = 0, 0, 0, 0
+            
             results['cnn_lstm']['accuracies'].append(lstm_acc)
             results['cnn_lstm']['fold_nums'].append(fold_num)
-            print(f"CNN-LSTM Accuracy: {lstm_acc*100:.2f}%")
+            results['cnn_lstm']['predictions'].append(lstm_preds)
+            results['cnn_lstm']['true_labels'].append(lstm_true)
+            results['cnn_lstm']['tn'].append(int(tn))
+            results['cnn_lstm']['fp'].append(int(fp))
+            results['cnn_lstm']['fn'].append(int(fn))
+            results['cnn_lstm']['tp'].append(int(tp))
+            print(f"CNN-LSTM Accuracy: {lstm_acc*100:.2f}% (TP={tp}, TN={tn}, FP={fp}, FN={fn})")
         
         # =====================================================================
         # Model 4: DANN (Domain Adversarial Neural Network)
@@ -801,9 +848,23 @@ def run_ablation_study(data_dir, models_to_run=['svm', 'cnn', 'cnn_lstm', 'dann'
             )
             
             dann_acc, dann_preds, dann_true = evaluate_dann_model(dann_model, test_loader, device)
+            
+            # Compute confusion matrix values
+            cm = confusion_matrix(dann_true, dann_preds)
+            if cm.shape == (2, 2):
+                tn, fp, fn, tp = cm.ravel()
+            else:
+                tn, fp, fn, tp = 0, 0, 0, 0
+            
             results['dann']['accuracies'].append(dann_acc)
             results['dann']['fold_nums'].append(fold_num)
-            print(f"DANN Accuracy: {dann_acc*100:.2f}%")
+            results['dann']['predictions'].append(dann_preds)
+            results['dann']['true_labels'].append(dann_true)
+            results['dann']['tn'].append(int(tn))
+            results['dann']['fp'].append(int(fp))
+            results['dann']['fn'].append(int(fn))
+            results['dann']['tp'].append(int(tp))
+            print(f"DANN Accuracy: {dann_acc*100:.2f}% (TP={tp}, TN={tn}, FP={fp}, FN={fn})")
     
     # =========================================================================
     # Final Results Summary
@@ -866,12 +927,41 @@ def run_ablation_study(data_dir, models_to_run=['svm', 'cnn', 'cnn_lstm', 'dann'
     }
     for model in models_to_run:
         save_data[f'{model}_accuracies'] = results[model]['accuracies']
+        save_data[f'{model}_tn'] = results[model]['tn']
+        save_data[f'{model}_fp'] = results[model]['fp']
+        save_data[f'{model}_fn'] = results[model]['fn']
+        save_data[f'{model}_tp'] = results[model]['tp']
         if model in summary_data:
             save_data[f'{model}_mean'] = summary_data[model]['mean']
             save_data[f'{model}_std'] = summary_data[model]['std']
     
     savemat(output_file, save_data)
     print(f"\nResults saved to: {output_file}")
+    
+    # Print confusion matrix summary
+    print("\n" + "=" * 70)
+    print("CONFUSION MATRIX SUMMARY (Totals across all folds)")
+    print("=" * 70)
+    for model in models_to_run:
+        if len(results[model]['tp']) > 0:
+            total_tp = sum(results[model]['tp'])
+            total_tn = sum(results[model]['tn'])
+            total_fp = sum(results[model]['fp'])
+            total_fn = sum(results[model]['fn'])
+            
+            # Calculate additional metrics
+            precision = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0
+            recall = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
+            f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+            specificity = total_tn / (total_tn + total_fp) if (total_tn + total_fp) > 0 else 0
+            
+            print(f"\n{model.upper()}:")
+            print(f"  TP={total_tp}, TN={total_tn}, FP={total_fp}, FN={total_fn}")
+            print(f"  Precision: {precision*100:.2f}%")
+            print(f"  Recall (Sensitivity): {recall*100:.2f}%")
+            print(f"  Specificity: {specificity*100:.2f}%")
+            print(f"  F1-Score: {f1*100:.2f}%")
+    print("=" * 70)
     
     # Create comparison plot
     create_comparison_plot(results, models_to_run, fold_numbers, data_dir, summary_data)
