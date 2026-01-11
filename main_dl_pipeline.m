@@ -7,9 +7,10 @@
 %    corresponding 'Normal' and 'Fatigued' state EEG files.
 % 2. Basic Preprocessing: For each file, it performs basic preprocessing ONLY:
 %    - Channel selection (frontal channels + reference)
-%    - Bandpass filtering (1-45 Hz)
+%    - Bandpass filtering (0.5-50 Hz)
 %    - Downsampling (250 Hz)
 %    - Re-referencing to linked mastoids
+%    NOTE: SKIPS vEOG regression and ICA artifact removal
 % 3. Data Preparation (Step 3): The preprocessed, continuous data is segmented
 %    into 2-second, non-overlapping windows of raw time-series data.
 % 4. Data Partitioning: The windowed data from all subjects is aggregated
@@ -31,8 +32,8 @@
 data_root_path = '/Users/ziglicis/Desktop/Research/ResearchDatasets/TheOriginalEEG'; 
 
 % Preprocessing Parameters (passed to step1)
-low_cutoff_freq  = 1;
-high_cutoff_freq = 45;
+low_cutoff_freq  = 0.5;
+high_cutoff_freq = 50;
 downsample_rate  = 250;
 frontal_channels = {'FP1', 'FP2', 'F7', 'F3', 'FZ', 'F4', 'F8'};
 % Use average reference for cross-dataset consistency
@@ -50,11 +51,6 @@ drozy_converted_path = fullfile(pwd, 'converted_drozy.mat');
 % Visualization Parameters
 enable_visualization = false; % Set to true to generate before/after plots
 viz_subject_limit = 12; % Only visualize first N subjects (set to Inf for all)
-
-% ICA Manual Review Parameters
-manual_ica_review = false;  % Set to true to manually select ICA components to reject
-                            % When true, you'll see IC time series and can choose which to reject
-                            % When false, uses automatic ICLabel-based rejection
 
 % --- END OF PARAMETERS ---
 
@@ -154,11 +150,7 @@ for i = 1:length(subject_folders)
         % This includes: channel selection, filtering, downsampling, re-referencing
         % This EXCLUDES: vEOG regression-based blink removal, ICA artifact removal
         EEG = step1_preprocess_data(EEG, low_cutoff_freq, high_cutoff_freq, downsample_rate, frontal_channels, ref_channels, should_visualize);
-        
-        % ICA and ICLabel artifact removal
-        % If manual_ica_review is true, you'll be prompted to select components
-        subject_file_id = sprintf('%s_%s', subject_id, file_info.label);
-        EEG = step2_run_ica_and_iclabel(EEG, should_visualize, subject_file_id, manual_ica_review);
+        EEG = step2_run_ica_and_iclabel(EEG, should_visualize);
 
         
         % Prepare sequence data
@@ -198,8 +190,7 @@ if ~isempty(drozy_sessions)
         end
         % Step 2 (best-effort)
         try
-            drozy_file_id = sprintf('Drozy_%s_%s', subject_id, label);
-            EEG = step2_run_ica_and_iclabel(EEG, should_visualize_drozy, drozy_file_id, manual_ica_review);
+            EEG = step2_run_ica_and_iclabel(EEG, should_visualize_drozy);
         catch ME
             warning('DROZY %s (%s) ICA/ICLabel failed, proceeding without IC rejection: %s', subject_id, label, ME.message);
         end
