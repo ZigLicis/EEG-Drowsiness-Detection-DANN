@@ -95,7 +95,7 @@ def load_matlab_v73(filename):
 def load_matlab_v5(filename):
     """Load MATLAB v5 files using scipy.io.loadmat"""
     from scipy.io import loadmat as scipy_loadmat
-    data = scipy_loadmat(filename, squeeze_me=True, struct_as_record=False)
+    data = scipy_loadmat(filename, squeeze_me=False, struct_as_record=False)
     # Remove metadata keys
     return {k: v for k, v in data.items() if not k.startswith('_')}
 
@@ -106,6 +106,39 @@ def load_mat_file(filename):
     except (OSError, IOError):
         # Not HDF5 format, try v5
         return load_matlab_v5(filename)
+
+def ensure_4d(arr):
+    """Ensure array is 4D (freq, channels, 1, samples) for MATLAB-exported data"""
+    arr = np.array(arr)
+    if arr.ndim == 3:
+        # Missing singleton dimension, add it
+        arr = arr[:, :, np.newaxis, :]
+    return arr
+
+def prepare_fold_data(fold_data):
+    """Prepare fold data with consistent shapes"""
+    # Ensure 4D arrays
+    XTrain = ensure_4d(fold_data['XTrain'])
+    XValidation = ensure_4d(fold_data['XValidation'])
+    XTest = ensure_4d(fold_data['XTest'])
+    
+    # Transpose from MATLAB (freq, ch, 1, samples) to PyTorch (samples, 1, freq, ch)
+    X_train = np.transpose(XTrain, (3, 2, 0, 1))
+    X_val = np.transpose(XValidation, (3, 2, 0, 1))
+    X_test = np.transpose(XTest, (3, 2, 0, 1))
+    
+    # Flatten labels and subject indices
+    y_train = np.array(fold_data['YTrain_numeric']).flatten()
+    y_val = np.array(fold_data['YValidation_numeric']).flatten()
+    y_test = np.array(fold_data['YTest_numeric']).flatten()
+    
+    subject_train = np.array(fold_data['train_subject_nums']).flatten()
+    subject_val = np.array(fold_data['val_subject_nums']).flatten()
+    subject_test = np.array(fold_data['test_subject_nums']).flatten()
+    
+    return (X_train, y_train, subject_train,
+            X_val, y_val, subject_val,
+            X_test, y_test, subject_test)
 
 # ============================================================================
 # Dataset Classes
@@ -690,23 +723,10 @@ def run_ablation_study(data_dir, models_to_run=['svm', 'cnn', 'cnn_lstm', 'dann'
             print(f"Error loading fold {fold_num}: {e}")
             continue
         
-        # Extract data
-        X_train = fold_data['XTrain']
-        y_train = fold_data['YTrain_numeric'].flatten()
-        subject_train = fold_data['train_subject_nums'].flatten()
-        
-        X_val = fold_data['XValidation']
-        y_val = fold_data['YValidation_numeric'].flatten()
-        subject_val = fold_data['val_subject_nums'].flatten()
-        
-        X_test = fold_data['XTest']
-        y_test = fold_data['YTest_numeric'].flatten()
-        subject_test = fold_data['test_subject_nums'].flatten()
-        
-        # Reshape for PyTorch models
-        X_train_pt = np.transpose(X_train, (3, 2, 0, 1))
-        X_val_pt = np.transpose(X_val, (3, 2, 0, 1))
-        X_test_pt = np.transpose(X_test, (3, 2, 0, 1))
+        # Extract data with consistent shapes
+        (X_train_pt, y_train, subject_train,
+         X_val_pt, y_val, subject_val,
+         X_test_pt, y_test, subject_test) = prepare_fold_data(fold_data)
         
         # Normalize (channel-wise)
         train_mean = X_train_pt.mean(axis=(0, 1, 2), keepdims=True)
