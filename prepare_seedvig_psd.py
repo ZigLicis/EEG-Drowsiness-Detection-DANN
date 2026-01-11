@@ -251,10 +251,10 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description='Prepare SEED-VIG data for DANN pipeline')
     parser.add_argument('--input', type=str, 
-                        default='data/SEED-VIG_Extracted/SEED_VIG.mat',
+                        default='data/VLA_VRW_extracted.mat',
                         help='Path to SEED_VIG.mat file')
     parser.add_argument('--output', type=str,
-                        default='diagnostics/python_data_seedvig_psd',
+                        default='diagnostics/python_data_seedvla_psd_',
                         help='Output directory for fold files')
     parser.add_argument('--freq_bins', type=int, default=128,
                         help='Number of frequency bins for PSD')

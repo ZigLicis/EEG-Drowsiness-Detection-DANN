@@ -41,23 +41,19 @@ WINDOW_SEC = 3  # Window length in seconds
 WINDOW_SAMPLES = TARGET_SFREQ * WINDOW_SEC  # 384 samples
 
 # PERCLOS thresholds
-ALERT_THRESHOLD = 0.35
-DROWSY_THRESHOLD = 0.7
+ALERT_THRESHOLD = 0.40
+DROWSY_THRESHOLD = 0.65
 
 # Minimum samples per class to include a session
 MIN_SAMPLES_PER_CLASS = 50
 
-# EEG channels to use (17 channels matching SEED-VIG style)
-# Original channels are referenced to Pz, we'll select standard 10-20 channels
+# EEG channels to use (7 frontal channels matching TheOriginalEEG pipeline)
 CHANNELS_TO_USE = [
     'EEG Fp1 - Pz', 'EEG Fp2 - Pz',  # Frontal pole
     'EEG F7 - Pz', 'EEG F3 - Pz', 'EEG Fz - Pz', 'EEG F4 - Pz', 'EEG F8 - Pz',  # Frontal
-    'EEG T3 - Pz', 'EEG C3 - Pz', 'EEG Cz - Pz', 'EEG C4 - Pz', 'EEG T4 - Pz',  # Central/Temporal
-    'EEG T5 - Pz', 'EEG P3 - Pz', 'EEG P4 - Pz', 'EEG T6 - Pz',  # Parietal/Temporal
-    'EEG O1 - Pz', 'EEG O2 - Pz'  # Occipital
 ]
 
-def load_eeg_data(edf_path, target_sfreq=128, low_freq=1, high_freq=45):
+def load_eeg_data(edf_path, target_sfreq=128, low_freq=1, high_freq=45, channels_to_use=None):
     """
     Load and preprocess EEG data from EDF file.
     
@@ -66,21 +62,34 @@ def load_eeg_data(edf_path, target_sfreq=128, low_freq=1, high_freq=45):
         target_sfreq: Target sampling frequency
         low_freq: Low cutoff for bandpass filter
         high_freq: High cutoff for bandpass filter
+        channels_to_use: List of channel names to select (default: CHANNELS_TO_USE)
         
     Returns:
         data: (n_channels, n_samples) array
         sfreq: Sampling frequency
         ch_names: Channel names
     """
+    if channels_to_use is None:
+        channels_to_use = CHANNELS_TO_USE
+    
     # Load raw data
     raw = mne.io.read_raw_edf(edf_path, preload=True, verbose=False)
     
     # Get original sampling rate
     orig_sfreq = raw.info['sfreq']
     
-    # Select channels (only EEG, exclude Trigger)
-    eeg_channels = [ch for ch in raw.ch_names if ch.startswith('EEG')]
-    raw.pick_channels(eeg_channels)
+    # Select only the specified frontal channels
+    available_channels = raw.ch_names
+    selected_channels = [ch for ch in channels_to_use if ch in available_channels]
+    
+    if len(selected_channels) == 0:
+        raise ValueError(f"None of the requested channels found. Available: {available_channels}")
+    
+    if len(selected_channels) < len(channels_to_use):
+        missing = set(channels_to_use) - set(selected_channels)
+        print(f"  Warning: Missing channels: {missing}")
+    
+    raw.pick_channels(selected_channels)
     
     # Bandpass filter (1-45 Hz for drowsiness detection)
     raw.filter(low_freq, high_freq, verbose=False)
@@ -239,18 +248,33 @@ def process_dataset(data_dir, dataset_name='lab'):
             print(f"  Insufficient samples (need {MIN_SAMPLES_PER_CLASS} per class), skipping")
             continue
         
-        # Balance classes by selecting most extreme samples
-        n_samples_per_class = min(n_alert, n_drowsy)
+        # Allow up to 2:1 imbalance ratio
+        MAX_IMBALANCE_RATIO = 2.0
+        minority_count = min(n_alert, n_drowsy)
+        majority_count = max(n_alert, n_drowsy)
+        
+        # Cap majority class at 2x minority
+        max_majority = int(minority_count * MAX_IMBALANCE_RATIO)
+        
+        if n_alert <= n_drowsy:
+            # Alert is minority
+            n_alert_select = n_alert
+            n_drowsy_select = min(n_drowsy, max_majority)
+        else:
+            # Drowsy is minority
+            n_drowsy_select = n_drowsy
+            n_alert_select = min(n_alert, max_majority)
         
         # Sort alert by PERCLOS (ascending - most alert first)
         alert_sorted_idx = np.argsort(alert_perclos)
-        selected_alert = [alert_windows[i] for i in alert_sorted_idx[:n_samples_per_class]]
+        selected_alert = [alert_windows[i] for i in alert_sorted_idx[:n_alert_select]]
         
         # Sort drowsy by PERCLOS (descending - most drowsy first)
         drowsy_sorted_idx = np.argsort(drowsy_perclos)[::-1]
-        selected_drowsy = [drowsy_windows[i] for i in drowsy_sorted_idx[:n_samples_per_class]]
+        selected_drowsy = [drowsy_windows[i] for i in drowsy_sorted_idx[:n_drowsy_select]]
         
-        print(f"  Selected {n_samples_per_class} per class (balanced)")
+        imbalance_ratio = max(n_alert_select, n_drowsy_select) / min(n_alert_select, n_drowsy_select)
+        print(f"  Selected alert={n_alert_select}, drowsy={n_drowsy_select} (ratio: {imbalance_ratio:.2f}:1)")
         
         # Add to dataset
         for window in selected_alert:
@@ -287,10 +311,10 @@ def main():
                         help='Base directory for VLA_VRW data')
     parser.add_argument('--min_samples', type=int, default=50,
                         help='Minimum samples per class to include a session')
-    parser.add_argument('--alert_threshold', type=float, default=0.35,
-                        help='PERCLOS threshold for alert (default: 0.35)')
-    parser.add_argument('--drowsy_threshold', type=float, default=0.7,
-                        help='PERCLOS threshold for drowsy (default: 0.7)')
+    parser.add_argument('--alert_threshold', type=float, default=0.40,
+                        help='PERCLOS threshold for alert (default: 0.40)')
+    parser.add_argument('--drowsy_threshold', type=float, default=0.60,
+                        help='PERCLOS threshold for drowsy (default: 0.60)')
     
     args = parser.parse_args()
     

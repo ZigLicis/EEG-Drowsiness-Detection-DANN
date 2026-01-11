@@ -244,12 +244,28 @@ CONFIGS = {
     },
 }
 
-def train_dann_with_config(model, train_loader, val_loader, device, config):
-    """Train DANN with specified configuration"""
+def train_dann_with_config(model, train_loader, val_loader, device, config, class_weights=None):
+    """Train DANN with specified configuration
+    
+    Args:
+        model: The DANN model
+        train_loader: Training data loader
+        val_loader: Validation data loader
+        device: torch device
+        config: Configuration name from CONFIGS
+        class_weights: Optional tensor of class weights for imbalanced data
+    """
     
     cfg = CONFIGS[config]
     
-    drowsiness_criterion = nn.CrossEntropyLoss(label_smoothing=cfg['label_smoothing'])
+    # Use class weights if provided (for imbalanced data)
+    if class_weights is not None:
+        drowsiness_criterion = nn.CrossEntropyLoss(
+            weight=class_weights, 
+            label_smoothing=cfg['label_smoothing']
+        )
+    else:
+        drowsiness_criterion = nn.CrossEntropyLoss(label_smoothing=cfg['label_smoothing'])
     subject_criterion = nn.CrossEntropyLoss()
     
     optimizer = optim.AdamW(model.parameters(), lr=cfg['lr'], weight_decay=5e-5)
@@ -400,6 +416,18 @@ def run_dann_tuning(data_dir, config='conservative', save_fold_results=False):
         X_val = (X_val - train_mean) / train_std
         X_test = (X_test - train_mean) / train_std
         
+        # Calculate class weights for imbalanced data
+        # y_train is 1-indexed (1=alert, 2=drowsy), convert to 0-indexed for bincount
+        y_train_0idx = (y_train - 1).astype(int)
+        class_counts = np.bincount(y_train_0idx, minlength=num_classes)
+        # Inverse frequency weighting: weight = total / (num_classes * count)
+        class_weights = len(y_train_0idx) / (num_classes * class_counts + 1e-8)
+        class_weights = torch.FloatTensor(class_weights).to(device)
+        
+        imbalance_ratio = max(class_counts) / (min(class_counts) + 1e-8)
+        print(f"  Class distribution: Alert={class_counts[0]}, Drowsy={class_counts[1]} (ratio: {imbalance_ratio:.2f}:1)")
+        print(f"  Class weights: Alert={class_weights[0]:.3f}, Drowsy={class_weights[1]:.3f}")
+        
         # Datasets
         train_dataset = EEGDatasetWithSubject(X_train, y_train, subject_train)
         val_dataset = EEGDatasetWithSubject(X_val, y_val, subject_val)
@@ -413,8 +441,8 @@ def run_dann_tuning(data_dir, config='conservative', save_fold_results=False):
         input_shape = (1, X_train.shape[2], X_train.shape[3])
         model = DomainAdversarialCNN(input_shape, num_classes, num_subjects).to(device)
         
-        # Train
-        model = train_dann_with_config(model, train_loader, val_loader, device, config)
+        # Train with class weights
+        model = train_dann_with_config(model, train_loader, val_loader, device, config, class_weights)
         
         # Evaluate
         acc, predictions, true_labels = evaluate_model(model, test_loader, device)
