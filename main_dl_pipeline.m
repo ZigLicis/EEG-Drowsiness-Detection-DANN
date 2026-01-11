@@ -52,6 +52,9 @@ drozy_converted_path = fullfile(pwd, 'converted_drozy.mat');
 enable_visualization = false; % Set to true to generate before/after plots
 viz_subject_limit = 12; % Only visualize first N subjects (set to Inf for all)
 
+% ICA Manual Review
+manual_ica_review = false; % Set to true to manually select ICs to reject after ICLabel
+
 % --- END OF PARAMETERS ---
 
 % Start EEGLAB if not running
@@ -150,7 +153,10 @@ for i = 1:length(subject_folders)
         % This includes: channel selection, filtering, downsampling, re-referencing
         % This EXCLUDES: vEOG regression-based blink removal, ICA artifact removal
         EEG = step1_preprocess_data(EEG, low_cutoff_freq, high_cutoff_freq, downsample_rate, frontal_channels, ref_channels, should_visualize);
-        EEG = step2_run_ica_and_iclabel(EEG, should_visualize);
+        
+        % Create subject file identifier for ICA review
+        subject_file_id = sprintf('%s_%s', subject_id, file_info.label);
+        EEG = step2_run_ica_and_iclabel(EEG, should_visualize, subject_file_id, manual_ica_review);
 
         
         % Prepare sequence data
@@ -190,7 +196,8 @@ if ~isempty(drozy_sessions)
         end
         % Step 2 (best-effort)
         try
-            EEG = step2_run_ica_and_iclabel(EEG, should_visualize_drozy);
+            drozy_file_id = sprintf('Drozy_%s_%s', subject_id, label);
+            EEG = step2_run_ica_and_iclabel(EEG, should_visualize_drozy, drozy_file_id, manual_ica_review);
         catch ME
             warning('DROZY %s (%s) ICA/ICLabel failed, proceeding without IC rejection: %s', subject_id, label, ME.message);
         end

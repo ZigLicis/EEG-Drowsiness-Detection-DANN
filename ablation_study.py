@@ -92,6 +92,21 @@ def load_matlab_v73(filename):
                 continue
     return data
 
+def load_matlab_v5(filename):
+    """Load MATLAB v5 files using scipy.io.loadmat"""
+    from scipy.io import loadmat as scipy_loadmat
+    data = scipy_loadmat(filename, squeeze_me=True, struct_as_record=False)
+    # Remove metadata keys
+    return {k: v for k, v in data.items() if not k.startswith('_')}
+
+def load_mat_file(filename):
+    """Load .mat file, trying v7.3 (HDF5) first, then falling back to v5"""
+    try:
+        return load_matlab_v73(filename)
+    except (OSError, IOError):
+        # Not HDF5 format, try v5
+        return load_matlab_v5(filename)
+
 # ============================================================================
 # Dataset Classes
 # ============================================================================
@@ -634,7 +649,7 @@ def run_ablation_study(data_dir, models_to_run=['svm', 'cnn', 'cnn_lstm', 'dann'
     # Load metadata
     metadata_file = os.path.join(data_dir, 'metadata.mat')
     try:
-        metadata = load_matlab_v73(metadata_file)
+        metadata = load_mat_file(metadata_file)
         num_classes = int(metadata['num_classes'])
         num_subjects = int(metadata['num_subjects'])
     except Exception as e:
@@ -670,7 +685,7 @@ def run_ablation_study(data_dir, models_to_run=['svm', 'cnn', 'cnn_lstm', 'dann'
         
         # Load fold data
         try:
-            fold_data = load_matlab_v73(os.path.join(data_dir, f'fold_{fold_num}_data.mat'))
+            fold_data = load_mat_file(os.path.join(data_dir, f'fold_{fold_num}_data.mat'))
         except Exception as e:
             print(f"Error loading fold {fold_num}: {e}")
             continue

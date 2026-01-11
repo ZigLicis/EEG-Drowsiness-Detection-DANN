@@ -20,7 +20,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import torch.nn.functional as F
-from scipy.io import savemat
+from scipy.io import savemat, loadmat as scipy_loadmat
 import h5py
 from sklearn.metrics import accuracy_score, confusion_matrix
 import argparse
@@ -53,6 +53,20 @@ def load_matlab_v73(filename):
             except:
                 continue
     return data
+
+def load_matlab_v5(filename):
+    """Load MATLAB v5 files using scipy.io.loadmat"""
+    data = scipy_loadmat(filename, squeeze_me=True, struct_as_record=False)
+    # Remove metadata keys
+    return {k: v for k, v in data.items() if not k.startswith('_')}
+
+def load_mat_file(filename):
+    """Load .mat file, trying v7.3 (HDF5) first, then falling back to v5"""
+    try:
+        return load_matlab_v73(filename)
+    except (OSError, IOError):
+        # Not HDF5 format, try v5
+        return load_matlab_v5(filename)
 
 class EEGDatasetWithSubject(Dataset):
     def __init__(self, X, y_drowsiness, y_subject):
@@ -320,7 +334,7 @@ def run_dann_tuning(data_dir, config='conservative', save_fold_results=False):
     print("=" * 70)
     
     # Load metadata
-    metadata = load_matlab_v73(os.path.join(data_dir, 'metadata.mat'))
+    metadata = load_mat_file(os.path.join(data_dir, 'metadata.mat'))
     num_classes = int(metadata['num_classes'])
     num_subjects = int(metadata['num_subjects'])
     
@@ -338,7 +352,7 @@ def run_dann_tuning(data_dir, config='conservative', save_fold_results=False):
     for fold_num in fold_numbers:
         print(f"--- Fold {fold_num} ---")
         
-        fold_data = load_matlab_v73(os.path.join(data_dir, f'fold_{fold_num}_data.mat'))
+        fold_data = load_mat_file(os.path.join(data_dir, f'fold_{fold_num}_data.mat'))
         
         X_train = np.transpose(fold_data['XTrain'], (3, 2, 0, 1))
         y_train = fold_data['YTrain_numeric'].flatten()
